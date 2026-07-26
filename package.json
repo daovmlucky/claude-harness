@@ -1,0 +1,10 @@
+{
+  "name": "claude-harness",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A model-agnostic delivery harness built from native Claude Code primitives.",
+  "scripts": {
+    "test": "node scripts/check-harness.test.js",
+    "check": "node scripts/check-harness.js"
+  }
+}
