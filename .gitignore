@@ -1,0 +1,7 @@
+.DS_Store
+Thumbs.db
+*.log
+docs/run-log.md
+.idea/
+.vscode/
+node_modules/
