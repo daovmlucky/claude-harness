@@ -182,6 +182,127 @@ write(manifestPath, original);
   rm(p2);
 }
 
+// --- CLI: in-place mode, --all, registry (Review Focus 5) ---
+const { registerProduct } = require('./lib/registry');
+const CLI = path.join(__dirname, 'sync-harness.js');
+function run(args) {
+  try { return { code: 0, out: execFileSync('node', [CLI, ...args], { encoding: 'utf8' }) }; }
+  catch (e) { return { code: e.status, out: `${e.stdout || ''}${e.stderr || ''}` }; }
+}
+function commitAll(dir) {
+  execFileSync('git', ['add', '-A'], { cwd: dir, stdio: 'ignore' });
+  execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-m', 'init'], { cwd: dir, stdio: 'ignore' });
+}
+const gitIn = (dir, args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim();
+
+const h2 = mkTmp('sy-h2-');
+makeFakeHarness(h2);
+const p2 = mkTmp('sy-p2-');
+const cli = createProduct({ harnessRoot: h2, name: 'cli-demo', parentDir: p2 }).target; // registers in h2
+registerProduct(h2, { name: 'ghost', path: path.join(p2, 'ghost') });                    // directory never created
+const cliRead = (rel) => fs.readFileSync(path.join(cli, rel), 'utf8');
+
+write(path.join(h2, '.claude/commands/a.md'), 'a v2\n');
+write(path.join(h2, '.claude/commands/quality-check.md'), 'qc\n');
+const dry = run([cli, '--harness-root', h2]);
+check('dry run exits 0 and lists the update', dry.code === 0 && /update\s+\.claude\/commands\/a\.md/.test(dry.out));
+check('dry run announces the new command', /new: \/quality-check - see CHANGELOG/.test(dry.out));
+check('dry run says nothing was written', /dry run: nothing written/.test(dry.out));
+check('dry run leaves the product untouched', cliRead('.claude/commands/a.md') === 'a v1\n');
+
+// a minor release: version bump + changelog is shown to the human
+const mp = path.join(h2, 'harness.manifest.json');
+const mj = JSON.parse(fs.readFileSync(mp, 'utf8'));
+mj.harnessVersion = '1.1.0';
+write(mp, JSON.stringify(mj));
+write(path.join(h2, 'CHANGELOG.md'), '# Changelog\n\n## 1.1.0\n- added quality check stage\n\n## 1.0.0\n- initial\n');
+const minor = run([cli, '--harness-root', h2]);
+check('dry run shows the version change', /cli-demo \(1\.0\.0 -> 1\.1\.0\)/.test(minor.out));
+check('dry run prints the changelog entries in range', /changelog 1\.1\.0:/.test(minor.out) && /added quality check stage/.test(minor.out));
+check('dry run does not print entries at or below the current version', !/changelog 1\.0\.0:/.test(minor.out));
+
+const applied = run([cli, '--apply', '--in-place', '--harness-root', h2]);
+check('--apply --in-place writes the update', applied.code === 0 && cliRead('.claude/commands/a.md') === 'a v2\n');
+check('--in-place records the new version', JSON.parse(cliRead('.claude/.harness-version')).harnessVersion === '1.1.0');
+
+write(path.join(h2, '.claude/commands/a.md'), 'a v3\n');
+const allDry = run(['--all', '--harness-root', h2]);
+check('--all names the processed product', allDry.code === 0 && /cli-demo \(1\.1\.0\): 1 update/.test(allDry.out));
+check('--all warns about a missing directory and goes on', /WARN ghost: missing directory/.test(allDry.out));
+const allApply = run(['--all', '--apply', '--in-place', '--harness-root', h2]);
+check('--all --apply updates the product despite the ghost entry', allApply.code === 0 && cliRead('.claude/commands/a.md') === 'a v3\n');
+
+check('rejects a missing target argument', (() => { const r = run(['--harness-root', h2]); return r.code === 1 && /usage/i.test(r.out); })());
+check('rejects a directory that is not a product', (() => { const r = run([p2, '--harness-root', h2]); return r.code === 1 && /\.harness-version/.test(r.out); })());
+
+// Review Focus 5: corrupt registry -> clear error
+write(path.join(h2, '.harness', 'products.json'), 'not json');
+const corrupt = run(['--all', '--harness-root', h2]);
+check('corrupt registry exits 1 with a clear message', corrupt.code === 1 && /not valid JSON/.test(corrupt.out));
+rm(h2);
+rm(p2);
+
+// --- CLI: isolated worktree (Review Focus 7) ---
+const h3 = mkTmp('sy-h3-');
+makeFakeHarness(h3);
+const p3 = mkTmp('sy-p3-');
+const wt = createProduct({ harnessRoot: h3, name: 'wt-demo', parentDir: p3, register: false }).target;
+commitAll(wt);
+const wtDir = path.join(p3, 'wt-demo-sync');
+const mainFile = (rel) => fs.readFileSync(path.join(wt, rel), 'utf8');
+write(path.join(h3, '.claude/commands/a.md'), 'a v2\n');
+
+const first = run([wt, '--apply', '--harness-root', h3]);
+check('--apply exits 0', first.code === 0);
+check('--apply leaves the product working directory untouched',
+  mainFile('.claude/commands/a.md') === 'a v1\n' && gitIn(wt, ['status', '--porcelain']) === '');
+check('--apply writes into <product>-sync', fs.readFileSync(path.join(wtDir, '.claude/commands/a.md'), 'utf8') === 'a v2\n');
+check('--apply uses branch chore/harness-sync-v1.0.0', gitIn(wtDir, ['branch', '--show-current']) === 'chore/harness-sync-v1.0.0');
+check('--apply made no commit', gitIn(wtDir, ['rev-parse', 'HEAD']) === gitIn(wt, ['rev-parse', 'HEAD']));
+check('--apply tells the human how to review and clean up',
+  /git -C .*diff/.test(first.out) && /git worktree remove/.test(first.out) && /between two stages/.test(first.out));
+
+write(path.join(h3, '.claude/commands/a.md'), 'a v3\n');
+const second = run([wt, '--apply', '--harness-root', h3]);
+check('a second --apply reuses the same worktree',
+  second.code === 0 && fs.readFileSync(path.join(wtDir, '.claude/commands/a.md'), 'utf8') === 'a v3\n' && mainFile('.claude/commands/a.md') === 'a v1\n');
+
+// major jump: SKIPPED, exit 0, nothing written anywhere
+const m3 = JSON.parse(fs.readFileSync(path.join(h3, 'harness.manifest.json'), 'utf8'));
+m3.harnessVersion = '2.0.0';
+write(path.join(h3, 'harness.manifest.json'), JSON.stringify(m3));
+const skipped = run([wt, '--apply', '--harness-root', h3]);
+check('major jump is SKIPPED with exit 0', skipped.code === 0 && /SKIPPED wt-demo: major upgrade, not applied/.test(skipped.out));
+check('major jump writes nothing', fs.readFileSync(path.join(wtDir, '.claude/commands/a.md'), 'utf8') === 'a v3\n');
+
+// refusals: dirty .claude/ and no commits create no worktree
+const h4 = mkTmp('sy-h4-');
+makeFakeHarness(h4);
+const p4 = mkTmp('sy-p4-');
+const dirty = createProduct({ harnessRoot: h4, name: 'dirty-demo', parentDir: p4, register: false }).target;
+commitAll(dirty);
+// create the no-commit product BEFORE the harness changes, so that it is really up to date
+// and the only thing that can stop it is the missing commit
+const fresh = createProduct({ harnessRoot: h4, name: 'fresh-demo', parentDir: p4, register: false }).target;
+write(path.join(dirty, '.claude/workflows/w.js'), 'w local edit\n'); // uncommitted change under .claude/
+write(path.join(h4, '.claude/commands/a.md'), 'a v2\n');
+const dirtyRun = run([dirty, '--apply', '--harness-root', h4]);
+check('refuses when .claude/ has uncommitted changes', dirtyRun.code === 1 && /uncommitted changes under \.claude\//.test(dirtyRun.out));
+check('refusal creates no worktree', !fs.existsSync(path.join(p4, 'dirty-demo-sync')));
+const freshRun = run([fresh, '--apply', '--harness-root', h4]);
+check('refuses a product with no commits', freshRun.code === 1 && /no commits yet/.test(freshRun.out));
+check('no-commit refusal creates no worktree', !fs.existsSync(path.join(p4, 'fresh-demo-sync')));
+
+// a leftover branch from an earlier sync gets a clear message, not a raw git error
+execFileSync('git', ['worktree', 'remove', '--force', wtDir], { cwd: wt, stdio: 'ignore' });
+write(path.join(h3, 'harness.manifest.json'), JSON.stringify({ ...m3, harnessVersion: '1.0.0' }));
+write(path.join(h3, '.claude/commands/a.md'), 'a v4\n');
+const leftover = run([wt, '--apply', '--harness-root', h3]);
+check('a leftover sync branch is explained',
+  leftover.code === 1 && /already exists from an earlier sync/.test(leftover.out) && /git branch -D/.test(leftover.out));
+check('the leftover-branch refusal creates no worktree', !fs.existsSync(wtDir));
+rm(h3); rm(p3); rm(h4); rm(p4);
+
 rm(harness);
 rm(parent);
 done('sync-core');
