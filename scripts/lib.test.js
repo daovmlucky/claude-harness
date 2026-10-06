@@ -4,6 +4,8 @@ const path = require('path');
 const { makeChecker, mkTmp, write, rm, makeFakeHarness } = require('./lib/testutil');
 const { listManaged, sha256, readManifest } = require('./lib/fsutil');
 const { major, compare, changelogBetween, hasChangelogEntry } = require('./lib/version');
+const { harnessState } = require('./lib/git');
+const { readRegistry, registerProduct } = require('./lib/registry');
 const { check, done } = makeChecker();
 
 const root = mkTmp('lib-');
@@ -63,6 +65,19 @@ const deny = JSON.parse(fs.readFileSync(path.join(repo, 'product-template/.claud
 check('template denies gh pr merge', deny.includes('Bash(gh pr merge *)'));
 check('template denies push to main', deny.includes('Bash(git push origin main *)'));
 check('template denies force push', deny.includes('Bash(git push --force *)'));
+
+// --- git state + registry ---
+check('harnessState outside git is unknown', harnessState(root).commit === 'unknown' && harnessState(root).dirty === false);
+check('empty registry reads as []', JSON.stringify(readRegistry(root)) === '[]');
+registerProduct(root, { name: 'p1', path: '/x/p1' });
+registerProduct(root, { name: 'p1-renamed', path: '/x/p1' });
+registerProduct(root, { name: 'p2', path: '/x/p2' });
+check('registerProduct replaces the entry with the same path',
+  readRegistry(root).map((p) => p.name).join() === 'p1-renamed,p2');
+write(path.join(root, '.harness/products.json'), 'not json');
+let regErr = '';
+try { readRegistry(root); } catch (e) { regErr = e.message; }
+check('corrupt registry gives a clear error', /not valid JSON/.test(regErr) && /products\.json/.test(regErr));
 
 rm(root);
 done('lib');
