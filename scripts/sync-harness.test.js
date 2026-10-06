@@ -5,6 +5,7 @@ const { execFileSync } = require('child_process');
 const { makeChecker, mkTmp, write, rm, makeFakeHarness } = require('./lib/testutil');
 const { createProduct } = require('./lib/create-product');
 const { planSync, applySync, hasChanges, formatPlan, MajorVersionError } = require('./lib/sync');
+const { sha256 } = require('./lib/fsutil');
 const { check, done } = makeChecker();
 
 function throws(fn) { try { fn(); return ''; } catch (e) { return e.message; } }
@@ -94,6 +95,31 @@ fs.writeFileSync(vf, JSON.stringify(vBad));
 check('refuses a version file with an unsafe path', /unsafe path/.test(throws(() => planSync(harness, target))));
 fs.writeFileSync(vf, vOrig);
 
+function tamper(mutate) {
+  const o = JSON.parse(vOrig);
+  mutate(o);
+  fs.writeFileSync(vf, JSON.stringify(o));
+}
+tamper((o) => { o.files['..\\evil.txt'] = 'x'; });
+check('refuses a backslash path in the version file', /unsafe path/.test(throws(() => planSync(harness, target))));
+fs.writeFileSync(vf, vOrig);
+tamper((o) => { o.files['.claude/settings.json'] = 'x'; });
+check('refuses settings.json as a recorded key', /unsafe path/.test(throws(() => planSync(harness, target))));
+fs.writeFileSync(vf, vOrig);
+tamper((o) => { o.files['.claude/.harness-version'] = 'x'; });
+check('refuses the version file as a recorded key', /unsafe path/.test(throws(() => planSync(harness, target))));
+fs.writeFileSync(vf, vOrig);
+write(prod('docs/old.md'), 'doc\n');
+tamper((o) => { o.files['docs/old.md'] = sha256(prod('docs/old.md')); });
+let outside = null;
+try { outside = planSync(harness, target); } catch (e) { outside = null; }
+check('a recorded key outside .claude/ is a conflict, never a remove',
+  outside !== null && outside.conflict.includes('docs/old.md') && !outside.remove.includes('docs/old.md'));
+if (outside) applySync(harness, target, outside);
+check('apply leaves a file outside .claude/ alone', fs.existsSync(prod('docs/old.md')));
+rm(prod('docs/old.md'));
+fs.writeFileSync(vf, vOrig);
+
 // Review Focus 6: major jump refused (both directions), minor/patch accepted
 const manifestPath = path.join(harness, 'harness.manifest.json');
 const original = fs.readFileSync(manifestPath, 'utf8');
@@ -116,6 +142,29 @@ m.harnessVersion = '0.9.0'; // product newer than harness is also a major mismat
 write(manifestPath, JSON.stringify(m));
 check('refuses when the product is ahead of the harness', /major upgrade/.test(throws(() => planSync(harness, target))));
 write(manifestPath, original);
+
+// Review Focus 8: CRLF checkouts (autocrlf) must not look like local edits
+{
+  const h2 = mkTmp('sy-h2-');
+  makeFakeHarness(h2);
+  const p2 = mkTmp('sy-p2-');
+  const t2 = createProduct({ harnessRoot: h2, name: 'crlf', parentDir: p2, register: false }).target;
+  const files = ['.claude/commands/a.md', '.claude/workflows/w.js'];
+  for (const f of files) {
+    const fp = path.join(t2, f);
+    fs.writeFileSync(fp, fs.readFileSync(fp, 'utf8').replace(/\n/g, '\r\n'));
+  }
+  const pc = planSync(h2, t2);
+  check('CRLF product files are current', files.every((f) => pc.current.includes(f)));
+  check('CRLF alone causes no change',
+    [pc.conflict, pc.kept, pc.update, pc.add, pc.remove].every((a) => a.length === 0) && !hasChanges(pc));
+  write(path.join(h2, '.claude/commands/a.md'), 'a changed\n');
+  const pu = planSync(h2, t2);
+  check('CRLF product file with a changed harness file is update, not conflict',
+    pu.update.includes('.claude/commands/a.md') && !pu.conflict.includes('.claude/commands/a.md'));
+  rm(h2);
+  rm(p2);
+}
 
 rm(harness);
 rm(parent);

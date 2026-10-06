@@ -8,6 +8,9 @@ const { major } = require('./version');
 
 class MajorVersionError extends Error {}
 
+// files sync must never touch, even if a version file lists them
+const PROTECTED = ['.claude/settings.json', '.claude/.harness-version'];
+
 function versionPath(productRoot) {
   return path.join(productRoot, '.claude', '.harness-version');
 }
@@ -43,9 +46,12 @@ function planSync(harnessRoot, productRoot) {
   }
 
   const recorded = version.files || {};
+  const root = path.resolve(productRoot);
   for (const rel of Object.keys(recorded)) {
     // a tampered or corrupt version file must never make us touch files outside the product
-    if (path.isAbsolute(rel) || rel.split('/').includes('..')) {
+    const abs = path.resolve(root, rel);
+    if (rel.includes('\\') || path.isAbsolute(rel) || rel.split('/').includes('..')
+      || !abs.startsWith(root + path.sep) || PROTECTED.includes(rel)) {
       throw new Error(`unsafe path in .harness-version: ${rel}`);
     }
   }
@@ -74,7 +80,9 @@ function planSync(harnessRoot, productRoot) {
     if (wanted.includes(rel)) continue;
     const dstPath = path.join(productRoot, rel);
     if (!fs.existsSync(dstPath)) continue;
-    (sha256(dstPath) === recorded[rel] ? plan.remove : plan.conflict).push(rel);
+    // never delete anything outside .claude/
+    const removable = rel.startsWith('.claude/') && sha256(dstPath) === recorded[rel];
+    (removable ? plan.remove : plan.conflict).push(rel);
   }
 
   plan.settingsMissing = settingsMissing(harnessRoot, productRoot);
