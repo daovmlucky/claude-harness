@@ -4,7 +4,8 @@
 //   default is a dry run. --apply writes into a separate worktree
 //   (<product>-sync), never into the product's own working directory, and
 //   never commits or pushes. --in-place writes straight into the product
-//   directory (emergency/testing only). Major version jumps are never applied.
+//   directory (emergency/testing exception, single repo only, never with
+//   --all). Major version jumps are never applied.
 const fs = require('fs');
 const path = require('path');
 const {
@@ -50,7 +51,10 @@ function syncOne(harnessRoot, name, dir, { apply, inPlace }) {
     return;
   }
   const wt = createSyncWorktree(dir, plan.versionTo);
-  applySync(harnessRoot, wt.dir, planSync(harnessRoot, wt.dir));
+  if (wt.reused) console.log(`  reusing existing worktree ${wt.dir}`);
+  const wtPlan = planSync(harnessRoot, wt.dir);
+  console.log(formatPlan(`${name} (worktree)`, wtPlan));
+  applySync(harnessRoot, wt.dir, wtPlan);
   console.log(`  applied in ${wt.dir} on branch ${wt.branch}`);
   console.log(`  nothing was committed and ${dir} was not touched`);
   console.log(`  review:   git -C "${wt.dir}" diff`);
@@ -62,10 +66,15 @@ function main() {
   const target = process.argv[2];
   if (!target || (target.startsWith('--') && target !== '--all')) {
     console.error('usage: sync-harness.js <product-dir> | --all [--apply] [--in-place]');
+    console.error('  --in-place is an emergency/testing exception: it writes into the product directory (single repo only)');
     process.exit(1);
   }
   const harnessRoot = path.resolve(opt('--harness-root') || path.join(__dirname, '..'));
   const options = { apply: flag('--apply'), inPlace: flag('--in-place') };
+  if (target === '--all' && options.inPlace) {
+    console.error('sync failed: --in-place cannot be combined with --all');
+    process.exit(1);
+  }
   let failed = false;
 
   if (target === '--all') {

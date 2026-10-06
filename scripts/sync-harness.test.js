@@ -229,8 +229,10 @@ write(path.join(h2, '.claude/commands/a.md'), 'a v3\n');
 const allDry = run(['--all', '--harness-root', h2]);
 check('--all names the processed product', allDry.code === 0 && /cli-demo \(1\.1\.0\): 1 update/.test(allDry.out));
 check('--all warns about a missing directory and goes on', /WARN ghost: missing directory/.test(allDry.out));
-const allApply = run(['--all', '--apply', '--in-place', '--harness-root', h2]);
-check('--all --apply updates the product despite the ghost entry', allApply.code === 0 && cliRead('.claude/commands/a.md') === 'a v3\n');
+const allInPlace = run(['--all', '--apply', '--in-place', '--harness-root', h2]);
+check('--all --apply --in-place is refused and writes nothing',
+  allInPlace.code === 1 && /sync failed: --in-place cannot be combined with --all/.test(allInPlace.out)
+  && cliRead('.claude/commands/a.md') === 'a v2\n');
 
 check('rejects a missing target argument', (() => { const r = run(['--harness-root', h2]); return r.code === 1 && /usage/i.test(r.out); })());
 check('rejects a directory that is not a product', (() => { const r = run([p2, '--harness-root', h2]); return r.code === 1 && /\.harness-version/.test(r.out); })());
@@ -244,64 +246,125 @@ rm(p2);
 
 // --- CLI: isolated worktree (Review Focus 7) ---
 const h3 = mkTmp('sy-h3-');
-makeFakeHarness(h3);
 const p3 = mkTmp('sy-p3-');
-const wt = createProduct({ harnessRoot: h3, name: 'wt-demo', parentDir: p3, register: false }).target;
-commitAll(wt);
-const wtDir = path.join(p3, 'wt-demo-sync');
-const mainFile = (rel) => fs.readFileSync(path.join(wt, rel), 'utf8');
-write(path.join(h3, '.claude/commands/a.md'), 'a v2\n');
-
-const first = run([wt, '--apply', '--harness-root', h3]);
-check('--apply exits 0', first.code === 0);
-check('--apply leaves the product working directory untouched',
-  mainFile('.claude/commands/a.md') === 'a v1\n' && gitIn(wt, ['status', '--porcelain']) === '');
-check('--apply writes into <product>-sync', fs.readFileSync(path.join(wtDir, '.claude/commands/a.md'), 'utf8') === 'a v2\n');
-check('--apply uses branch chore/harness-sync-v1.0.0', gitIn(wtDir, ['branch', '--show-current']) === 'chore/harness-sync-v1.0.0');
-check('--apply made no commit', gitIn(wtDir, ['rev-parse', 'HEAD']) === gitIn(wt, ['rev-parse', 'HEAD']));
-check('--apply tells the human how to review and clean up',
-  /git -C .*diff/.test(first.out) && /git worktree remove/.test(first.out) && /between two stages/.test(first.out));
-
-write(path.join(h3, '.claude/commands/a.md'), 'a v3\n');
-const second = run([wt, '--apply', '--harness-root', h3]);
-check('a second --apply reuses the same worktree',
-  second.code === 0 && fs.readFileSync(path.join(wtDir, '.claude/commands/a.md'), 'utf8') === 'a v3\n' && mainFile('.claude/commands/a.md') === 'a v1\n');
-
-// major jump: SKIPPED, exit 0, nothing written anywhere
-const m3 = JSON.parse(fs.readFileSync(path.join(h3, 'harness.manifest.json'), 'utf8'));
-m3.harnessVersion = '2.0.0';
-write(path.join(h3, 'harness.manifest.json'), JSON.stringify(m3));
-const skipped = run([wt, '--apply', '--harness-root', h3]);
-check('major jump is SKIPPED with exit 0', skipped.code === 0 && /SKIPPED wt-demo: major upgrade, not applied/.test(skipped.out));
-check('major jump writes nothing', fs.readFileSync(path.join(wtDir, '.claude/commands/a.md'), 'utf8') === 'a v3\n');
-
-// refusals: dirty .claude/ and no commits create no worktree
 const h4 = mkTmp('sy-h4-');
-makeFakeHarness(h4);
 const p4 = mkTmp('sy-p4-');
-const dirty = createProduct({ harnessRoot: h4, name: 'dirty-demo', parentDir: p4, register: false }).target;
-commitAll(dirty);
-// create the no-commit product BEFORE the harness changes, so that it is really up to date
-// and the only thing that can stop it is the missing commit
-const fresh = createProduct({ harnessRoot: h4, name: 'fresh-demo', parentDir: p4, register: false }).target;
-write(path.join(dirty, '.claude/workflows/w.js'), 'w local edit\n'); // uncommitted change under .claude/
-write(path.join(h4, '.claude/commands/a.md'), 'a v2\n');
-const dirtyRun = run([dirty, '--apply', '--harness-root', h4]);
-check('refuses when .claude/ has uncommitted changes', dirtyRun.code === 1 && /uncommitted changes under \.claude\//.test(dirtyRun.out));
-check('refusal creates no worktree', !fs.existsSync(path.join(p4, 'dirty-demo-sync')));
-const freshRun = run([fresh, '--apply', '--harness-root', h4]);
-check('refuses a product with no commits', freshRun.code === 1 && /no commits yet/.test(freshRun.out));
-check('no-commit refusal creates no worktree', !fs.existsSync(path.join(p4, 'fresh-demo-sync')));
+let wt;
+try {
+  makeFakeHarness(h3);
+  wt = createProduct({ harnessRoot: h3, name: 'wt-demo', parentDir: p3, register: false }).target;
+  commitAll(wt);
+  const wtDir = path.join(p3, 'wt-demo-sync');
+  const mainFile = (rel) => fs.readFileSync(path.join(wt, rel), 'utf8');
+  write(path.join(h3, '.claude/commands/a.md'), 'a v2\n');
 
-// a leftover branch from an earlier sync gets a clear message, not a raw git error
-execFileSync('git', ['worktree', 'remove', '--force', wtDir], { cwd: wt, stdio: 'ignore' });
-write(path.join(h3, 'harness.manifest.json'), JSON.stringify({ ...m3, harnessVersion: '1.0.0' }));
-write(path.join(h3, '.claude/commands/a.md'), 'a v4\n');
-const leftover = run([wt, '--apply', '--harness-root', h3]);
-check('a leftover sync branch is explained',
-  leftover.code === 1 && /already exists from an earlier sync/.test(leftover.out) && /git branch -D/.test(leftover.out));
-check('the leftover-branch refusal creates no worktree', !fs.existsSync(wtDir));
-rm(h3); rm(p3); rm(h4); rm(p4);
+  const first = run([wt, '--apply', '--harness-root', h3]);
+  check('--apply exits 0', first.code === 0);
+  check('--apply leaves the product working directory untouched',
+    mainFile('.claude/commands/a.md') === 'a v1\n' && gitIn(wt, ['status', '--porcelain']) === '');
+  check('--apply writes into <product>-sync', fs.readFileSync(path.join(wtDir, '.claude/commands/a.md'), 'utf8') === 'a v2\n');
+  check('--apply uses branch chore/harness-sync-v1.0.0', gitIn(wtDir, ['branch', '--show-current']) === 'chore/harness-sync-v1.0.0');
+  check('--apply made no commit', gitIn(wtDir, ['rev-parse', 'HEAD']) === gitIn(wt, ['rev-parse', 'HEAD']));
+  check('--apply tells the human how to review and clean up',
+    /git -C .*diff/.test(first.out) && /git worktree remove/.test(first.out) && /between two stages/.test(first.out));
+
+  write(path.join(h3, '.claude/commands/a.md'), 'a v3\n');
+  const second = run([wt, '--apply', '--harness-root', h3]);
+  check('a second --apply reuses the same worktree',
+    second.code === 0 && fs.readFileSync(path.join(wtDir, '.claude/commands/a.md'), 'utf8') === 'a v3\n' && mainFile('.claude/commands/a.md') === 'a v1\n');
+
+  // major jump: SKIPPED, exit 0, nothing written anywhere
+  const m3 = JSON.parse(fs.readFileSync(path.join(h3, 'harness.manifest.json'), 'utf8'));
+  m3.harnessVersion = '2.0.0';
+  write(path.join(h3, 'harness.manifest.json'), JSON.stringify(m3));
+  const skipped = run([wt, '--apply', '--harness-root', h3]);
+  check('major jump is SKIPPED with exit 0', skipped.code === 0 && /SKIPPED wt-demo: major upgrade, not applied/.test(skipped.out));
+  check('major jump writes nothing', fs.readFileSync(path.join(wtDir, '.claude/commands/a.md'), 'utf8') === 'a v3\n');
+
+  // refusals: dirty .claude/ and no commits create no worktree
+  makeFakeHarness(h4);
+  const dirty = createProduct({ harnessRoot: h4, name: 'dirty-demo', parentDir: p4, register: false }).target;
+  commitAll(dirty);
+  // create the no-commit product BEFORE the harness changes, so that it is really up to date
+  // and the only thing that can stop it is the missing commit
+  const fresh = createProduct({ harnessRoot: h4, name: 'fresh-demo', parentDir: p4, register: false }).target;
+  write(path.join(dirty, '.claude/workflows/w.js'), 'w local edit\n'); // uncommitted change under .claude/
+  write(path.join(h4, '.claude/commands/a.md'), 'a v2\n');
+  const dirtyRun = run([dirty, '--apply', '--harness-root', h4]);
+  check('refuses when .claude/ has uncommitted changes', dirtyRun.code === 1 && /uncommitted changes under \.claude\//.test(dirtyRun.out));
+  check('refusal creates no worktree', !fs.existsSync(path.join(p4, 'dirty-demo-sync')));
+  const freshRun = run([fresh, '--apply', '--harness-root', h4]);
+  check('refuses a product with no commits', freshRun.code === 1 && /no commits yet/.test(freshRun.out));
+  check('no-commit refusal creates no worktree', !fs.existsSync(path.join(p4, 'fresh-demo-sync')));
+
+  // a leftover branch from an earlier sync gets a clear message, not a raw git error
+  execFileSync('git', ['worktree', 'remove', '--force', wtDir], { cwd: wt, stdio: 'ignore' });
+  write(path.join(h3, 'harness.manifest.json'), JSON.stringify({ ...m3, harnessVersion: '1.0.0' }));
+  write(path.join(h3, '.claude/commands/a.md'), 'a v4\n');
+  const leftover = run([wt, '--apply', '--harness-root', h3]);
+  check('a leftover sync branch is explained',
+    leftover.code === 1 && /already exists from an earlier sync/.test(leftover.out) && /git branch -D/.test(leftover.out));
+  check('the leftover-branch refusal creates no worktree', !fs.existsSync(wtDir));
+} finally {
+  for (const [repo, dir] of [[wt, path.join(p3, 'wt-demo-sync')]]) {
+    if (repo) { try { execFileSync('git', ['worktree', 'remove', '--force', dir], { cwd: repo, stdio: 'ignore' }); } catch (e) { /* already gone */ } }
+  }
+  rm(h3); rm(p3); rm(h4); rm(p4);
+}
+
+// --- CLI: --all resilience, conflict-only exit code, reused-worktree conflicts ---
+const h5 = mkTmp('sy-h5-');
+const p5 = mkTmp('sy-p5-');
+const h6 = mkTmp('sy-h6-');
+const p6 = mkTmp('sy-p6-');
+let real5;
+try {
+  makeFakeHarness(h5);
+  registerProduct(h5, { name: 'ghost5', path: path.join(p5, 'ghost5') });        // directory never created
+  const brokenDir = path.join(p5, 'broken5');
+  fs.mkdirSync(brokenDir);                                                         // exists, not a product
+  registerProduct(h5, { name: 'broken5', path: brokenDir });
+  real5 = createProduct({ harnessRoot: h5, name: 'real5', parentDir: p5, register: false }).target;
+  commitAll(real5);
+  registerProduct(h5, { name: 'real5', path: real5 });
+  write(path.join(h5, '.claude/commands/a.md'), 'a v2\n');
+
+  const allD = run(['--all', '--harness-root', h5]);
+  check('--all dry run keeps going past a ghost and a broken entry', /real5 \(1\.0\.0\): 1 update/.test(allD.out));
+  check('--all dry run warns about the ghost', /WARN ghost5: missing directory/.test(allD.out));
+  check('--all dry run reports the broken entry', /sync failed for broken5:/.test(allD.out));
+  check('--all dry run exits 1 because of the broken entry', allD.code === 1);
+  const allA = run(['--all', '--apply', '--harness-root', h5]);
+  check('--all --apply still updates the real product in its worktree',
+    fs.readFileSync(path.join(p5, 'real5-sync/.claude/commands/a.md'), 'utf8') === 'a v2\n'
+    && fs.readFileSync(path.join(real5, '.claude/commands/a.md'), 'utf8') === 'a v1\n');
+  check('--all --apply warns about the ghost and reports the broken entry',
+    /WARN ghost5: missing directory/.test(allA.out) && /sync failed for broken5:/.test(allA.out));
+  check('--all --apply exits 1 because of the broken entry', allA.code === 1);
+
+  // a conflict alone is not an error
+  makeFakeHarness(h6);
+  const conf = createProduct({ harnessRoot: h6, name: 'conf6', parentDir: p6 }).target;
+  write(path.join(conf, '.claude/commands/a.md'), 'product edit\n');
+  write(path.join(h6, '.claude/commands/a.md'), 'a v2\n');
+  const confRun = run(['--all', '--harness-root', h6]);
+  check('a conflict alone exits 0', confRun.code === 0 && /CONFLICT \.claude\/commands\/a\.md/.test(confRun.out));
+
+  // reused worktree: a human edit in <product>-sync shows up as a CONFLICT
+  const wtA = path.join(p5, 'real5-sync/.claude/commands/a.md');
+  write(wtA, 'human edit\n');
+  write(path.join(h5, '.claude/commands/a.md'), 'a v3\n');
+  const reuse = run([real5, '--apply', '--harness-root', h5]);
+  check('reused worktree says it is reused', /reusing existing worktree/.test(reuse.out));
+  check('reused worktree shows the CONFLICT instead of hiding it',
+    /real5 \(worktree\)/.test(reuse.out) && /CONFLICT \.claude\/commands\/a\.md/.test(reuse.out));
+  check('reused worktree keeps the human edit', fs.readFileSync(wtA, 'utf8') === 'human edit\n');
+} finally {
+  if (real5) {
+    try { execFileSync('git', ['worktree', 'remove', '--force', path.join(p5, 'real5-sync')], { cwd: real5, stdio: 'ignore' }); } catch (e) { /* already gone */ }
+  }
+  rm(h5); rm(p5); rm(h6); rm(p6);
+}
 
 rm(harness);
 rm(parent);
