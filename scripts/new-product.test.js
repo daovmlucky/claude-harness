@@ -100,6 +100,22 @@ check('real: version file carries the real harnessVersion',
   JSON.parse(fs.readFileSync(path.join(smoke.target, '.claude/.harness-version'), 'utf8')).harnessVersion === '1.0.0');
 check('real: registry untouched when register:false', !readRegistry(REPO).some((p) => p.name === 'smoke'));
 
+// --- CLI ---
+const CLI = path.join(__dirname, 'new-product.js');
+function runCli(args) {
+  try { return { code: 0, out: execFileSync('node', [CLI, ...args], { encoding: 'utf8' }) }; }
+  catch (e) { return { code: e.status, out: `${e.stdout || ''}${e.stderr || ''}` }; }
+}
+const ok = runCli(['cli-demo', '--dir', parent, '--harness-root', harness]);
+check('CLI creates the product and exits 0', ok.code === 0 && fs.existsSync(path.join(parent, 'cli-demo', 'CLAUDE.md')));
+check('CLI prints the created path', ok.out.includes(path.join(parent, 'cli-demo')));
+check('CLI says no remote was created', /no remote/i.test(ok.out));
+check('CLI registers into the harness it was given', readRegistry(harness).some((p) => p.name === 'cli-demo'));
+const bad = runCli(['Bad Name', '--dir', parent, '--harness-root', harness]);
+check('CLI exits 1 on an invalid name', bad.code === 1 && /new-product failed: invalid name/.test(bad.out));
+const none = runCli(['--dir', parent, '--harness-root', harness]);
+check('CLI exits 1 and prints usage without a name', none.code === 1 && /usage/i.test(none.out));
+
 rm(harness);
 rm(parent);
 done('new-product');
