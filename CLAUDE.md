@@ -28,8 +28,8 @@ product repos are created from.
 - Change a flow or add a step **only here**, then bump `harnessVersion` in
   `harness.manifest.json`, add a `## <version>` entry to `CHANGELOG.md`, and run
   `node scripts/sync-harness.js --all` (dry run) before `--all --apply`.
-- A sync never commits, never pushes, never touches a product's working
-  directory (it writes to `<product>-sync`), never overwrites a file the product
+- A sync never commits, never pushes, by default never touches a product's working
+  directory (it writes to `<product>-sync`; the `--in-place` exception is documented below), never overwrites a file the product
   edited (reported as a conflict), and never writes `.claude/settings.json`.
 - A product's `.claude/settings.json` denies merging PRs and the common ways to push to `main`
   or force-push. That is a best-effort stop, not a guarantee (a bare `git push` while on

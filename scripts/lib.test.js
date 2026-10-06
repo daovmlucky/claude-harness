@@ -63,7 +63,8 @@ check('real manifest excludes interview-prep workflow', !real.includes('.claude/
 check('real manifest excludes deep-dive command', !real.includes('.claude/commands/deep-dive.md'));
 check('real manifest never lists settings.local.json', !real.some((f) => f.includes('settings.local')));
 const realManifest = JSON.parse(fs.readFileSync(path.join(repo, 'harness.manifest.json'), 'utf8'));
-check('real manifest has harnessVersion 1.0.0', realManifest.harnessVersion === '1.0.0');
+check('real manifest has a MAJOR.MINOR.PATCH harnessVersion',
+  readManifest(repo).harnessVersion === realManifest.harnessVersion && /^\d+\.\d+\.\d+$/.test(realManifest.harnessVersion));
 check('real CHANGELOG has an entry for the manifest version',
   hasChangelogEntry(fs.readFileSync(path.join(repo, 'CHANGELOG.md'), 'utf8'), realManifest.harnessVersion));
 for (const t of ['CLAUDE.md.tmpl', 'gitignore.tmpl', 'docs/gates.json', 'docs/run-log.md', '.claude/settings.json']) {
@@ -93,6 +94,15 @@ write(path.join(root, '.harness/products.json'), 'not json');
 let regErr = '';
 try { readRegistry(root); } catch (e) { regErr = e.message; }
 check('corrupt registry gives a clear error', /not valid JSON/.test(regErr) && /products\.json/.test(regErr));
+
+for (const [body, why] of [['{}', 'not an array'], ['null', 'not an array'], ['[null]', 'entry 0'], ['[{"name":1}]', 'entry 0']]) {
+  write(path.join(root, '.harness/products.json'), body);
+  let e2 = '';
+  try { readRegistry(root); } catch (e) { e2 = e.message; }
+  check('malformed registry ' + body, /^registry is malformed: /.test(e2) && /products\.json/.test(e2) && e2.includes(why));
+}
+write(path.join(root, '.harness/products.json'), '[]');
+check('an empty array is a valid registry', readRegistry(root).length === 0);
 
 rm(root);
 done('lib');

@@ -16,8 +16,8 @@ When this harness changes, roll it out to every product repo:
     node scripts/sync-harness.js --all            # dry run: add / update / remove / conflict + changelog
     node scripts/sync-harness.js --all --apply    # writes into <product>-sync on chore/harness-sync-v<version>
 
-A sync never commits or pushes and never touches the product's own working
-directory: review `git -C <product>-sync diff`, commit there, open a PR, merge it
+A sync never commits or pushes and by default never touches the product's own working
+directory (the `--in-place` exception is documented below): review `git -C <product>-sync diff`, commit there, open a PR, merge it
 between two stages, then `git worktree remove <product>-sync`. The product needs
 at least one commit and a clean `.claude/`. Files the product edited are
 reported as conflicts and left alone. A major harness version is never synced

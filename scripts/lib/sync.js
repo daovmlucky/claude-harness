@@ -136,7 +136,7 @@ function formatPlan(name, plan) {
   const head = plan.versionFrom === plan.versionTo
     ? `${name} (${plan.versionTo})`
     : `${name} (${plan.versionFrom} -> ${plan.versionTo})`;
-  const counts = ['add', 'update', 'remove', 'conflict', 'kept']
+  const counts = ['add', 'update', 'remove', 'conflict', 'kept', 'refresh']
     .filter((k) => plan[k].length)
     .map((k) => `${plan[k].length} ${k}`);
   const lines = [counts.length ? `${head}: ${counts.join(', ')}` : `${head}: up to date`];

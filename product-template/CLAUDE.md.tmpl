@@ -6,7 +6,8 @@ the harness**: change them in claude-harness, then pull them in with
 
     node <path-to-claude-harness>/scripts/sync-harness.js <this-repo> --apply
 
-A sync never touches this working directory. It writes to a separate worktree
+By default a sync never touches this working directory (the `--in-place` exception is
+documented in the harness's `docs/bootstrap.md`). It writes to a separate worktree
 (`<this-repo>-sync`) on a `chore/harness-sync-v<version>` branch; review it,
 commit, open a PR, and **merge it only between two stages**, never in the
 middle of one. Local edits to a managed file are kept but are reported as

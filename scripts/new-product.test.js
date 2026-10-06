@@ -2,7 +2,8 @@
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
-const { makeChecker, mkTmp, write, rm, makeFakeHarness } = require('./lib/testutil');
+const { makeChecker, mkTmp, write, rm, makeFakeHarness, installScripts } = require('./lib/testutil');
+const { readManifest } = require('./lib/fsutil');
 const { createProduct } = require('./lib/create-product');
 const { readRegistry } = require('./lib/registry');
 const { check, done } = makeChecker();
@@ -51,7 +52,8 @@ check('does not copy the manifest itself', !has('harness.manifest.json'));
 
 // --- Review Focus 1: bad names write nothing ---
 const before = fs.readdirSync(parent).sort().join();
-for (const bad of ['Ridgo', 'my app', '../escape', 'a', '-x', 'foo-sync']) {
+for (const bad of ['Ridgo', 'my app', '../escape', 'a', '-x', 'foo-sync',
+  'con', 'prn', 'aux', 'nul', 'com1', 'com9', 'lpt1', 'lpt9', 'CON', 'Nul']) {
   check(`rejects name "${bad}"`, /invalid name/.test(throws(() => createProduct({ harnessRoot: harness, name: bad, parentDir: parent }))));
 }
 check('rejected names create nothing inside parent', fs.readdirSync(parent).sort().join() === before);
@@ -97,7 +99,7 @@ check('real: personal settings not copied', !sx('.claude/settings.local.json'));
 check('real: interview-prep workflow not copied', !sx('.claude/workflows/study-research.js'));
 check('real: deep-dive skill not copied', !sx('.claude/skills/deep-dive'));
 check('real: version file carries the real harnessVersion',
-  JSON.parse(fs.readFileSync(path.join(smoke.target, '.claude/.harness-version'), 'utf8')).harnessVersion === '1.0.0');
+  JSON.parse(fs.readFileSync(path.join(smoke.target, '.claude/.harness-version'), 'utf8')).harnessVersion === readManifest(REPO).harnessVersion);
 check('real: registry untouched when register:false', !readRegistry(REPO).some((p) => p.name === 'smoke'));
 
 // --- CLI ---
@@ -115,6 +117,40 @@ const bad = runCli(['Bad Name', '--dir', parent, '--harness-root', harness]);
 check('CLI exits 1 on an invalid name', bad.code === 1 && /new-product failed: invalid name/.test(bad.out));
 const none = runCli(['--dir', parent, '--harness-root', harness]);
 check('CLI exits 1 and prints usage without a name', none.code === 1 && /usage/i.test(none.out));
+
+// --- H1: strict argument parsing (CLI copied into a fake harness: its default root is the fake one) ---
+{
+  const hs = mkTmp('np-hs-');
+  const ps = mkTmp('np-ps-');
+  const cw = mkTmp('np-cw-');
+  makeFakeHarness(hs);
+  installScripts(hs);
+  const fakeCli = path.join(hs, 'scripts', 'new-product.js');
+  const runFake = (args) => {
+    try { return { code: 0, out: execFileSync('node', [fakeCli, ...args], { cwd: cw, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) }; }
+    catch (e) { return { code: e.status, out: `${e.stdout || ''}${e.stderr || ''}` }; }
+  };
+  const cases = [
+    [['foo', '--dir'], /--dir requires a value/],
+    [['foo', '--seed'], /--seed requires a value/],
+    [['foo', '--harness-root'], /--harness-root requires a value/],
+    [['foo', '--dir', '--seed', 'x.md'], /--dir requires a value/],
+    [['foo', '--harness-root', '--dir', ps], /--harness-root requires a value/],
+    [['foo', '--dir', ps, '--aply'], /unknown option --aply/],
+    [['foo', '--dir', ps, '--inplace'], /unknown option --inplace/],
+    [['foo', '--harness-root=' + hs, '--dir', ps], /unknown option --harness-root=/],
+    [['foo', 'bar', '--dir', ps], /unexpected argument bar/],
+  ];
+  for (const [args, re] of cases) {
+    const r = runFake(args);
+    check('new-product CLI usage error for ' + args.join(' '), r.code === 1 && re.test(r.out));
+  }
+  check('usage errors write nothing',
+    fs.readdirSync(ps).length === 0 && fs.readdirSync(cw).length === 0 && !fs.existsSync(path.join(hs, '.harness')) && !fs.existsSync(path.join(path.dirname(hs), 'foo')));
+  const good = runFake(['foo', '--dir', ps]);
+  check('valid input still works through the same CLI', good.code === 0 && fs.existsSync(path.join(ps, 'foo', 'CLAUDE.md')));
+  rm(hs); rm(ps); rm(cw);
+}
 
 rm(harness);
 rm(parent);

@@ -2,7 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
-const { makeChecker, mkTmp, write, rm, makeFakeHarness } = require('./lib/testutil');
+const { makeChecker, mkTmp, write, rm, makeFakeHarness, installScripts } = require('./lib/testutil');
 const { createProduct } = require('./lib/create-product');
 const { planSync, applySync, hasChanges, formatPlan, MajorVersionError } = require('./lib/sync');
 const { sha256 } = require('./lib/fsutil');
@@ -61,6 +61,8 @@ write(prod('.claude/workflows/w.js'), 'w v2\n');
 const resolved = planSync(harness, target);
 check('resolved conflict becomes current', resolved.conflict.length === 0 && resolved.current.includes('.claude/workflows/w.js'));
 check('resolved conflict needs its record refreshed', resolved.refresh.includes('.claude/workflows/w.js') && hasChanges(resolved));
+check('formatPlan counts a pending refresh and does not say up to date',
+  (() => { const t = formatPlan('x', resolved); return /1 refresh/.test(t) && !/up to date/.test(t); })());
 applySync(harness, target, resolved);
 check('after resolving, a later harness change updates cleanly', (() => {
   write(path.join(harness, '.claude/workflows/w.js'), 'w v3\n');
@@ -222,7 +224,7 @@ function run(args) {
 }
 function commitAll(dir) {
   execFileSync('git', ['add', '-A'], { cwd: dir, stdio: 'ignore' });
-  execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-m', 'init'], { cwd: dir, stdio: 'ignore' });
+  execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', 'commit', '--no-verify', '-m', 'init'], { cwd: dir, stdio: 'ignore' });
 }
 const gitIn = (dir, args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim();
 
@@ -432,6 +434,45 @@ try {
     try { execFileSync('git', ['worktree', 'remove', '--force', path.join(p5, 'real5-sync')], { cwd: real5, stdio: 'ignore' }); } catch (e) { /* already gone */ }
   }
   rm(h5); rm(p5); rm(h6); rm(p6);
+}
+
+// --- H1: strict argument parsing (CLI copied into a fake harness: its default root is the fake one) ---
+{
+  const hs = mkTmp('sy-hs-');
+  const ps = mkTmp('sy-ps-');
+  const cw = mkTmp('sy-cw-');
+  try {
+    makeFakeHarness(hs);
+    installScripts(hs);
+    const pd = createProduct({ harnessRoot: hs, name: 'strict', parentDir: ps }).target;
+    write(path.join(hs, '.claude/commands/a.md'), 'a v2\n');
+    const regBefore = fs.readFileSync(path.join(hs, '.harness', 'products.json'), 'utf8');
+    const fakeCli = path.join(hs, 'scripts', 'sync-harness.js');
+    const runFake = (args) => {
+      try { return { code: 0, out: execFileSync('node', [fakeCli, ...args], { cwd: cw, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) }; }
+      catch (e) { return { code: e.status, out: `${e.stdout || ''}${e.stderr || ''}` }; }
+    };
+    const cases = [
+      [[pd, '--harness-root'], /--harness-root requires a value/],
+      [[pd, '--apply', '--in-place', '--harness-root'], /--harness-root requires a value/],
+      [[pd, '--harness-root', '--apply', '--in-place'], /--harness-root requires a value/],
+      [['--all', '--harness-root'], /--harness-root requires a value/],
+      [[pd, '--aply'], /unknown option --aply/],
+      [[pd, '--inplace'], /unknown option --inplace/],
+      [[pd, '--harness-root=' + hs, '--apply', '--in-place'], /unknown option --harness-root=/],
+      [[pd, 'extra'], /unexpected argument extra/],
+    ];
+    for (const [args, re] of cases) {
+      const r = runFake(args);
+      check('sync CLI usage error for ' + args.join(' '), r.code === 1 && re.test(r.out) && !/up to date|update\s/.test(r.out));
+    }
+    check('usage errors write nothing',
+      fs.readFileSync(path.join(pd, '.claude/commands/a.md'), 'utf8') === 'a v1\n'
+      && fs.readFileSync(path.join(hs, '.harness', 'products.json'), 'utf8') === regBefore
+      && fs.readdirSync(ps).join() === 'strict' && fs.readdirSync(cw).length === 0);
+    const dry = runFake([pd]);
+    check('valid input still works through the same CLI', dry.code === 0 && /update\s+\.claude\/commands\/a\.md/.test(dry.out));
+  } finally { rm(hs); rm(ps); rm(cw); }
 }
 
 rm(harness);

@@ -6,7 +6,10 @@ const { listManaged, readManifest, copyFile, sha256, walk, toPosix } = require('
 const { harnessState } = require('./git');
 const { registerProduct } = require('./registry');
 
-const NAME_RE = /^[a-z][a-z0-9-]{1,39}$/;
+const NAME_RE_SHAPE = /^[a-z][a-z0-9-]{1,39}$/;
+// Windows reserved device names cannot be used as a directory name
+const RESERVED_RE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+const NAME_RE = { test: (n) => NAME_RE_SHAPE.test(n) && !RESERVED_RE.test(n) };
 
 function copyTemplate(templateRoot, target, name) {
   for (const f of walk(templateRoot)) {

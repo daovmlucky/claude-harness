@@ -10,3 +10,5 @@ Every released `harnessVersion` needs an entry below. Classify each change:
 
 ## 1.0.0
 - Initial product bootstrap: `new-product.js`, `sync-harness.js`, `product-template/`, `/product-brainstorm`.
+- `/product-brainstorm` ships with prompts written for a motorbike-touring app; it is replaced by a generic `/brainstorm` in a later phase.
+- Renaming a managed file only by case (Explore.md -> explore.md) removes the old file and reports the new path as a conflict on Windows; rename via a new name instead.

@@ -10,11 +10,19 @@ function registryFile(harnessRoot) {
 function readRegistry(harnessRoot) {
   const f = registryFile(harnessRoot);
   if (!fs.existsSync(f)) return [];
+  let list;
   try {
-    return JSON.parse(fs.readFileSync(f, 'utf8'));
+    list = JSON.parse(fs.readFileSync(f, 'utf8'));
   } catch (e) {
     throw new Error(`registry is not valid JSON: ${f} (${e.message})`);
   }
+  if (!Array.isArray(list)) throw new Error(`registry is malformed: ${f} (not an array)`);
+  list.forEach((p, i) => {
+    if (!p || typeof p.name !== 'string' || typeof p.path !== 'string') {
+      throw new Error(`registry is malformed: ${f} (entry ${i} needs string name and path)`);
+    }
+  });
+  return list;
 }
 
 function registerProduct(harnessRoot, entry) {

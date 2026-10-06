@@ -41,4 +41,14 @@ function makeFakeHarness(root) {
     '{"permissions":{"deny":["Bash(gh pr merge *)","Bash(git push -f *)"]}}\n');
 }
 
-module.exports = { makeChecker, mkTmp, write, rm, makeFakeHarness };
+// Copy the CLI scripts into a fake harness, so a CLI run WITHOUT --harness-root
+// defaults to that fake harness and can never reach the real one.
+function installScripts(root) {
+  const src = path.join(__dirname, '..');
+  for (const f of ['new-product.js', 'sync-harness.js']) write(path.join(root, 'scripts', f), fs.readFileSync(path.join(src, f), 'utf8'));
+  for (const f of fs.readdirSync(__dirname)) {
+    if (f.endsWith('.js')) write(path.join(root, 'scripts', 'lib', f), fs.readFileSync(path.join(__dirname, f), 'utf8'));
+  }
+}
+
+module.exports = { makeChecker, mkTmp, write, rm, makeFakeHarness, installScripts };

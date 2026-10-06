@@ -13,11 +13,13 @@ const {
 } = require('./lib/sync');
 const { readRegistry } = require('./lib/registry');
 const { changelogBetween } = require('./lib/version');
+const { parseArgs } = require('./lib/args');
 
-const flag = (name) => process.argv.includes(name);
-function opt(name) {
-  const i = process.argv.indexOf(name);
-  return i !== -1 ? process.argv[i + 1] : undefined;
+function usage(prefix) {
+  if (prefix) console.error(`sync-harness: ${prefix}`);
+  console.error('usage: sync-harness.js <product-dir> | --all [--apply] [--in-place]');
+  console.error('  --in-place is an emergency/testing exception: it writes into the product directory (single repo only)');
+  process.exit(1);
 }
 
 function printChangelog(harnessRoot, plan) {
@@ -63,14 +65,19 @@ function syncOne(harnessRoot, name, dir, { apply, inPlace }) {
 }
 
 function main() {
-  const target = process.argv[2];
-  if (!target || (target.startsWith('--') && target !== '--all')) {
-    console.error('usage: sync-harness.js <product-dir> | --all [--apply] [--in-place]');
-    console.error('  --in-place is an emergency/testing exception: it writes into the product directory (single repo only)');
-    process.exit(1);
+  let parsed;
+  try {
+    parsed = parseArgs(process.argv.slice(2), { values: ['--harness-root'], flags: ['--all', '--apply', '--in-place'] });
+  } catch (e) {
+    usage(e.message);
   }
-  const harnessRoot = path.resolve(opt('--harness-root') || path.join(__dirname, '..'));
-  const options = { apply: flag('--apply'), inPlace: flag('--in-place') };
+  const all = parsed.flags.has('--all');
+  const extra = parsed.positional.slice(all ? 0 : 1)[0];
+  if (extra !== undefined) usage(`unexpected argument ${extra}`);
+  if (!all && !parsed.positional.length) usage();
+  const target = all ? '--all' : parsed.positional[0];
+  const harnessRoot = path.resolve(parsed.values['--harness-root'] || path.join(__dirname, '..'));
+  const options = { apply: parsed.flags.has('--apply'), inPlace: parsed.flags.has('--in-place') };
   if (target === '--all' && options.inPlace) {
     console.error('sync failed: --in-place cannot be combined with --all');
     process.exit(1);
