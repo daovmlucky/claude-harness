@@ -4,7 +4,7 @@
   "private": true,
   "description": "A model-agnostic delivery harness built from native Claude Code primitives.",
   "scripts": {
-    "test": "node scripts/check-harness.test.js",
+    "test": "node scripts/check-harness.test.js && node scripts/lib.test.js",
     "check": "node scripts/check-harness.js"
   }
 }
