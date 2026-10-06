@@ -1,0 +1,42 @@
+# {{NAME}} — Operating Model
+
+Bootstrapped from claude-harness. The workflow definitions in `.claude/`
+(commands, workflows, the reviewer agent, the harness skill) are **managed by
+the harness**: change them in claude-harness, then pull them in with
+
+    node <path-to-claude-harness>/scripts/sync-harness.js <this-repo> --apply
+
+By default a sync never touches this working directory (the `--in-place` exception is
+documented in the harness's `docs/bootstrap.md`). It writes to a separate worktree
+(`<this-repo>-sync`) on a `chore/harness-sync-v<version>` branch; review it,
+commit, open a PR, and **merge it only between two stages**, never in the
+middle of one. Local edits to a managed file are kept but are reported as
+conflicts. `.claude/settings.json` and everything under `docs/` belong to this
+product and are never written by a sync. A major harness version is never
+synced; this repo stays on its current line until you migrate it on purpose.
+
+## Pipeline
+brainstorm → spec → architect → spike → backlog → foundation → features → verify → beta
+
+Available now: `/product-brainstorm`. The other stages arrive through
+`sync-harness` as the harness ships them.
+
+## Human gates
+- G0 — direction chosen, user validation recorded in `docs/validation.md`
+- G1 — spec and UI design approved
+- G2 — design, spike results and backlog approved
+- G3a / G3b — you merge every PR yourself
+
+Gate state lives in `docs/gates.json` (`null` = not approved).
+
+## Rules
+- Agents never merge PRs and never push to `main`. `.claude/settings.json` denies the common spellings as a best-effort stop (a bare `git push` while on `main` cannot be blocked); the real guarantee is branch protection on the GitHub remote, so enable it.
+- One PR per Task. Never two unmerged PRs touching the same file.
+- Independent review runs in the `reviewer` subagent; fix-loop is capped at 5.
+- Decisions need a reason and the trade-off accepted (an ADR in `docs/adr/`).
+
+## Source-of-truth files
+- `docs/spec.md` — scope, Epics, Stories, acceptance criteria, NFRs
+- `docs/design.md` and `docs/adr/` — architecture decisions
+- `docs/backlog.md` — Tasks, dependencies, waves
+- `docs/run-log.md` — evidence for each run

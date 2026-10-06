@@ -1,0 +1,13 @@
+{
+  "harnessVersion": "1.0.0",
+  "managed": [
+    ".claude/commands",
+    ".claude/agents",
+    ".claude/skills/harness",
+    ".claude/workflows"
+  ],
+  "exclude": [
+    ".claude/commands/deep-dive.md",
+    ".claude/workflows/study-research.js"
+  ]
+}

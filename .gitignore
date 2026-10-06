@@ -5,3 +5,8 @@ docs/run-log.md
 .idea/
 .vscode/
 node_modules/
+
+# local registry of product repos (machine-specific paths)
+.harness/
+# product briefs live in the product repo; this repo is public
+docs/brainstorm/
