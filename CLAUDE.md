@@ -31,6 +31,9 @@ product repos are created from.
 - A sync never commits, never pushes, never touches a product's working
   directory (it writes to `<product>-sync`), never overwrites a file the product
   edited (reported as a conflict), and never writes `.claude/settings.json`.
+- A product's `.claude/settings.json` denies merging PRs and the common ways to push to `main`
+  or force-push. That is a best-effort stop, not a guarantee (a bare `git push` while on
+  `main` cannot be blocked): enable branch protection on the GitHub remote too.
 - Product-specific material (briefs, specs, designs) belongs in the product repo,
   never here: this repo is public.
 - Exception: `sync-harness.js <repo> --apply --in-place` writes straight into the

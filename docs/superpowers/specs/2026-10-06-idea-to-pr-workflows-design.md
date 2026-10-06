@@ -165,7 +165,7 @@ Nguyên tắc: chỉ dùng nhiều agent độc lập ở chỗ tính độc l�
 Chưa đo chi phí thực tế; chỉnh lại sau lần chạy đầu tiên của từng workflow (xem mức dùng token trong `/workflows`).
 
 ## 6. An toàn và kiểm soát
-- `.claude/settings.json` deny: `Bash(gh pr merge *)`, `Bash(git push origin main *)`, `Bash(git push --force *)`. Đây là chốt cứng cho "manual merge", độc lập với prompt.
+- `.claude/settings.json` deny: `Bash(gh pr merge *)`, `Bash(git push origin main *)`, `Bash(git push --force *)`, cùng các biến thể `git push -u origin main`, `git push origin HEAD:main`, `git push --force-with-lease`. Đây là chốt chặn best-effort cho "manual merge", độc lập với prompt, không phải đảm bảo tuyệt đối (ví dụ `git push` trần khi đang đứng trên `main` không thể chặn mà không chặn mọi lần push). Cần bật thêm branch protection trên remote GitHub.
 - Agent chỉ được tạo nhánh `task/*`, `spike/*`, `foundation/*`.
 - Kiểm soát chi phí: `args.maxTasks`, số vòng tranh luận ≤2, fix-loop ≤5, cờ `args.dryRun` chỉ chạy bước lập kế hoạch.
 - Chạy thử `/features` với 1 task trước khi chạy cả wave.

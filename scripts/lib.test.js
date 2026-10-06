@@ -76,6 +76,10 @@ const deny = JSON.parse(fs.readFileSync(path.join(repo, 'product-template/.claud
 check('template denies gh pr merge', deny.includes('Bash(gh pr merge *)'));
 check('template denies push to main', deny.includes('Bash(git push origin main *)'));
 check('template denies force push', deny.includes('Bash(git push --force *)'));
+for (const rule of ['Bash(git push -u origin main)', 'Bash(git push -u origin main *)', 'Bash(git push origin HEAD:main)',
+  'Bash(git push origin HEAD:main *)', 'Bash(git push --force-with-lease)', 'Bash(git push --force-with-lease *)']) {
+  check('template denies ' + rule, deny.includes(rule));
+}
 
 // --- git state + registry ---
 check('harnessState outside git is unknown', harnessState(root).commit === 'unknown' && harnessState(root).dirty === false);

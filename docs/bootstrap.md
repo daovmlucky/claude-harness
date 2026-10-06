@@ -6,7 +6,9 @@ Create a new repo for a product, next to this one:
 
 This copies the workflows listed in `harness.manifest.json`, writes the
 product's own `CLAUDE.md`, `docs/` skeleton and `.claude/settings.json` (which
-denies merging PRs and pushing to `main`), runs `git init`, and records the repo
+denies merging PRs, pushing to `main` and force pushes; these rules are best-effort, since a bare
+`git push` while on `main` cannot be blocked, so also enable branch protection on the
+GitHub remote), runs `git init`, and records the repo
 in `.harness/products.json`. It does not commit and does not create a remote.
 
 When this harness changes, roll it out to every product repo:

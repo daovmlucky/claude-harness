@@ -29,7 +29,7 @@ Available now: `/product-brainstorm`. The other stages arrive through
 Gate state lives in `docs/gates.json` (`null` = not approved).
 
 ## Rules
-- Agents never merge PRs and never push to `main` (denied in `.claude/settings.json`).
+- Agents never merge PRs and never push to `main`. `.claude/settings.json` denies the common spellings as a best-effort stop (a bare `git push` while on `main` cannot be blocked); the real guarantee is branch protection on the GitHub remote, so enable it.
 - One PR per Task. Never two unmerged PRs touching the same file.
 - Independent review runs in the `reviewer` subagent; fix-loop is capped at 5.
 - Decisions need a reason and the trade-off accepted (an ADR in `docs/adr/`).
