@@ -61,7 +61,11 @@ Lý do tách `/foundation` khỏi `/features`: các task song song đều cần 
 **Cập nhật toàn bộ repo sản phẩm [U]:** mọi thay đổi về flow hay step ở harness phải lan sang TẤT CẢ repo sản phẩm đã tạo. Cơ chế:
 - `new-product.js` ghi đường dẫn repo mới vào sổ đăng ký cục bộ `.harness/products.json` của harness. File này chứa đường dẫn máy cá nhân nên nằm trong `.gitignore`, không đẩy lên GitHub.
 - `sync-harness.js --all` đọc sổ đăng ký, xử lý từng repo, và bỏ qua kèm cảnh báo nếu đường dẫn không còn tồn tại.
-- Với mỗi repo: tạo nhánh `chore/harness-sync-<version>`, áp dụng các file cập nhật, và **không commit, không push**; bạn xem diff rồi tự commit và mở PR như mọi thay đổi khác. File đã bị repo sản phẩm sửa riêng được liệt kê là xung đột và không bị ghi đè.
+- Với mỗi repo: `--apply` ghi vào **git worktree riêng** `<repo>-sync` trên nhánh `chore/harness-sync-v<version>` (không bao giờ vào thư mục đang làm việc của repo sản phẩm), **không commit, không push**; bạn xem `git diff` trong worktree, commit, mở PR và chỉ merge giữa hai stage. Yêu cầu: repo sản phẩm đã có ít nhất một commit và `.claude/` không có thay đổi chưa commit. File đã bị repo sản phẩm sửa riêng được liệt kê là xung đột và không bị ghi đè.
+- `.claude/settings.json` thuộc sản phẩm: sync không ghi, chỉ cảnh báo luật deny của template mà sản phẩm còn thiếu.
+- **Phiên bản:** `harnessVersion` (semver) trong manifest; patch và minor được sync, **major thì sync từ chối** (`SKIPPED ... major upgrade, not applied`). Major = làm hỏng sản phẩm đang chạy dở (đổi hình dạng file trạng thái, đổi tên command, cần cờ/quyền/phiên bản Claude Code mới, đổi mô hình chạy như Sub-agents sang Agent Teams). Cổng chặn cứng mới chỉ là minor nếu sản phẩm tự bật cưỡng chế. Mỗi phiên bản phải có mục trong `CHANGELOG.md`, và sync in các mục giữa phiên bản của sản phẩm và phiên bản mới nhất.
+- Repo ở dòng major cũ vẫn được vá lỗi: giữ nhánh `vN` của harness và chạy `sync-harness.js` với `--harness-root` trỏ tới worktree của nhánh đó.
+- Ngoại lệ: `sync-harness.js <repo> --apply --in-place` ghi thẳng vào thư mục sản phẩm; chỉ dùng khi khẩn cấp hoặc để kiểm thử, chỉ cho một repo, và bị từ chối khi dùng cùng `--all`.
 - Kiểm tra bắt buộc: một thay đổi ở harness mà chưa sync sang repo nào sẽ được `check-harness.js` nhắc ("N repo đang dùng phiên bản cũ").
 
 **Phương án thay thế (chưa chọn):** đóng gói harness thành plugin để cập nhật bằng cơ chế plugin. Ưu: cập nhật chuẩn, không lệch. Nhược: lệnh bị gắn tên plugin (ví dụ `/tên-plugin:architect`) và tôi chưa kiểm chứng việc cài plugin từ thư mục local. Cân nhắc khi có nhiều sản phẩm.
@@ -161,7 +165,7 @@ Nguyên tắc: chỉ dùng nhiều agent độc lập ở chỗ tính độc l�
 Chưa đo chi phí thực tế; chỉnh lại sau lần chạy đầu tiên của từng workflow (xem mức dùng token trong `/workflows`).
 
 ## 6. An toàn và kiểm soát
-- `.claude/settings.json` deny: `Bash(gh pr merge:*)`, `Bash(git push origin main:*)`, `Bash(git push --force:*)`. Đây là chốt cứng cho "manual merge", độc lập với prompt.
+- `.claude/settings.json` deny: `Bash(gh pr merge *)`, `Bash(git push origin main *)`, `Bash(git push --force *)`. Đây là chốt cứng cho "manual merge", độc lập với prompt.
 - Agent chỉ được tạo nhánh `task/*`, `spike/*`, `foundation/*`.
 - Kiểm soát chi phí: `args.maxTasks`, số vòng tranh luận ≤2, fix-loop ≤5, cờ `args.dryRun` chỉ chạy bước lập kế hoạch.
 - Chạy thử `/features` với 1 task trước khi chạy cả wave.
