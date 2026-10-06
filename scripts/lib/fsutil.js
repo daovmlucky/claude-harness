@@ -30,6 +30,9 @@ function readManifest(root) {
 
 // Every file the harness distributes: manifest `managed` entries (files or
 // directories) minus `exclude`. Returns sorted posix-style relative paths.
+const NEVER_MANAGED = ['.claude/settings.json', '.claude/settings.local.json', '.claude/.harness-version'];
+const JUNK = new Set(['.ds_store', 'thumbs.db']);
+
 function listManaged(root) {
   const manifest = readManifest(root);
   const exclude = new Set(manifest.exclude || []);
@@ -40,7 +43,9 @@ function listManaged(root) {
     const list = fs.statSync(abs).isDirectory() ? walk(abs) : [abs];
     for (const f of list) {
       const rel = toPosix(path.relative(root, f));
-      if (!exclude.has(rel)) files.add(rel);
+      if (exclude.has(rel) || NEVER_MANAGED.includes(rel.toLowerCase())) continue;
+      if (JUNK.has(path.posix.basename(rel).toLowerCase())) continue;
+      files.add(rel);
     }
   }
   return [...files].sort();

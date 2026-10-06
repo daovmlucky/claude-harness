@@ -28,6 +28,17 @@ write(lf, 'one\ntwo\n');
 check('sha256 ignores CRLF vs LF (core.autocrlf on Windows)', sha256(crlf) === sha256(lf));
 check('sha256 still tells different content apart', sha256(lf) !== sha256(a));
 
+// protected files and OS junk are never listed, even when a manifest entry covers them
+{
+  const r2 = mkTmp('lib2-');
+  write(path.join(r2, 'harness.manifest.json'), JSON.stringify({ harnessVersion: '1.0.0', managed: ['.claude'] }));
+  for (const f of ['commands/a.md', 'settings.json', 'settings.local.json', '.harness-version',
+    '.DS_Store', 'Thumbs.db', 'commands/.DS_Store', 'commands/Thumbs.db']) write(path.join(r2, '.claude', f), 'x\n');
+  check('a manifest entry covering .claude lists only real managed files',
+    JSON.stringify(listManaged(r2)) === JSON.stringify(['.claude/commands/a.md']));
+  rm(r2);
+}
+
 // --- version helpers ---
 check('major parses', major('2.3.4') === 2);
 check('compare orders numerically', compare('1.2.0', '1.10.0') === -1 && compare('2.0.0', '1.9.9') === 1 && compare('1.0.0', '1.0.0') === 0);

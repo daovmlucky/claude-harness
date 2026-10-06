@@ -2,14 +2,14 @@
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
-const { listManaged, readManifest, copyFile, sha256 } = require('./fsutil');
+const { listManaged, readManifest, copyFile, sha256, walk, toPosix } = require('./fsutil');
 const { harnessState, gitOut } = require('./git');
 const { major } = require('./version');
 
 class MajorVersionError extends Error {}
 
 // files sync must never touch, even if a version file lists them
-const PROTECTED = ['.claude/settings.json', '.claude/.harness-version'];
+const PROTECTED = ['.claude/settings.json', '.claude/settings.local.json', '.claude/.harness-version'];
 
 function versionPath(productRoot) {
   return path.join(productRoot, '.claude', '.harness-version');
@@ -52,7 +52,9 @@ function planSync(harnessRoot, productRoot) {
     const abs = path.resolve(root, rel);
     if (rel.includes('\\') || path.isAbsolute(rel) || rel.split('/').includes('..')
       || path.posix.normalize(rel) !== rel || rel.endsWith('/')
-      || !abs.startsWith(root + path.sep) || PROTECTED.includes(rel.toLowerCase())) {
+      || !abs.startsWith(root + path.sep) || PROTECTED.includes(rel.toLowerCase())
+      // NTFS alternate data streams (x::$DATA) and 8.3 short names (SETTIN~1.JSO) alias real files
+      || rel.includes(':') || rel.includes('~')) {
       throw new Error(`unsafe path in .harness-version: ${rel}`);
     }
   }
@@ -77,12 +79,16 @@ function planSync(harnessRoot, productRoot) {
     else plan.conflict.push(rel);                           // product edited it (or created it differently)
   }
 
+  // readdir never yields 8.3 or stream names, so only a case-exact listing entry may be deleted
+  const claudeDir = path.join(productRoot, '.claude');
+  const existingClaude = new Set(fs.existsSync(claudeDir)
+    ? walk(claudeDir).map((f) => toPosix(path.relative(productRoot, f))) : []);
   for (const rel of Object.keys(recorded)) {
     if (wanted.includes(rel)) continue;
     const dstPath = path.join(productRoot, rel);
     if (!fs.existsSync(dstPath)) continue;
-    // never delete anything outside .claude/
-    const removable = rel.startsWith('.claude/') && sha256(dstPath) === recorded[rel];
+    // never delete anything outside .claude/ or anything that is not a real, case-exact entry
+    const removable = rel.startsWith('.claude/') && existingClaude.has(rel) && sha256(dstPath) === recorded[rel];
     (removable ? plan.remove : plan.conflict).push(rel);
   }
 

@@ -136,6 +136,37 @@ for (const key of ['./.claude/settings.json', '.CLAUDE/settings.json', '.claude/
   fs.writeFileSync(vf, vOrig);
 }
 
+// Windows path aliases (ADS, 8.3 short names) and unprotected personal files must never reach plan.remove
+write(prod('.claude/settings.local.json'), '{"mine":true}');
+for (const [key, real] of [
+  ['.claude/settings.json::$DATA', '.claude/settings.json'],
+  ['.claude/SETTIN~1.JSO', '.claude/settings.json'],
+  ['.claude/settings.local.json', '.claude/settings.local.json'],
+]) {
+  write(prod(real), real.includes('local') ? '{"mine":true}' : settingsBefore); // the unfixed code deletes it, so recreate per key
+  const hash = sha256(prod(real));
+  tamper((o) => { o.files[key] = hash; });
+  check('refuses alias key ' + key, /unsafe path/.test(throws(() => planSync(harness, target))));
+  try { applySync(harness, target, planSync(harness, target)); } catch (e) { /* refusal expected */ }
+  fs.writeFileSync(vf, vOrig);
+  check('real file survives alias key ' + key, fs.existsSync(prod(real)));
+}
+// a plain, case-correct, unwanted file under .claude/ with a matching hash is still removable
+write(prod('.claude/commands/extra.md'), 'extra\n');
+tamper((o) => { o.files['.claude/commands/extra.md'] = sha256(prod('.claude/commands/extra.md')); });
+check('a plain unwanted file under .claude/ is removable', planSync(harness, target).remove.includes('.claude/commands/extra.md'));
+// a case-variant spelling of an existing file is never removed
+fs.writeFileSync(vf, vOrig);
+tamper((o) => { o.files['.claude/Commands/extra.md'] = sha256(prod('.claude/commands/extra.md')); });
+{
+  const pv = planSync(harness, target);
+  check('a case-variant key is a conflict, never a remove',
+    pv.conflict.includes('.claude/Commands/extra.md') && !pv.remove.includes('.claude/Commands/extra.md'));
+}
+fs.writeFileSync(vf, vOrig);
+rm(prod('.claude/commands/extra.md'));
+rm(prod('.claude/settings.local.json'));
+
 // Review Focus 6: major jump refused (both directions), minor/patch accepted
 const manifestPath = path.join(harness, 'harness.manifest.json');
 const original = fs.readFileSync(manifestPath, 'utf8');
