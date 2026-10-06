@@ -51,7 +51,8 @@ function planSync(harnessRoot, productRoot) {
     // a tampered or corrupt version file must never make us touch files outside the product
     const abs = path.resolve(root, rel);
     if (rel.includes('\\') || path.isAbsolute(rel) || rel.split('/').includes('..')
-      || !abs.startsWith(root + path.sep) || PROTECTED.includes(rel)) {
+      || path.posix.normalize(rel) !== rel || rel.endsWith('/')
+      || !abs.startsWith(root + path.sep) || PROTECTED.includes(rel.toLowerCase())) {
       throw new Error(`unsafe path in .harness-version: ${rel}`);
     }
   }

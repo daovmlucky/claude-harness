@@ -120,6 +120,22 @@ check('apply leaves a file outside .claude/ alone', fs.existsSync(prod('docs/old
 rm(prod('docs/old.md'));
 fs.writeFileSync(vf, vOrig);
 
+// non-normalized spellings of protected files must be refused, not deleted
+for (const key of ['.claude//settings.json', '.claude/./settings.json', '.claude//.harness-version', '.claude/./.harness-version']) {
+  const real = key.includes('settings') ? '.claude/settings.json' : '.claude/.harness-version';
+  const hash = sha256(prod(real));
+  tamper((o) => { o.files[key] = hash; });
+  check('refuses non-normalized key ' + key, /unsafe path/.test(throws(() => planSync(harness, target))));
+  try { applySync(harness, target, planSync(harness, target)); } catch (e) { /* refusal expected */ }
+  fs.writeFileSync(vf, vOrig);
+  check('protected file survives ' + key, fs.existsSync(prod('.claude/settings.json')) && fs.existsSync(prod('.claude/.harness-version')));
+}
+for (const key of ['./.claude/settings.json', '.CLAUDE/settings.json', '.claude/commands/']) {
+  tamper((o) => { o.files[key] = 'x'; });
+  check('refuses key ' + key, /unsafe path/.test(throws(() => planSync(harness, target))));
+  fs.writeFileSync(vf, vOrig);
+}
+
 // Review Focus 6: major jump refused (both directions), minor/patch accepted
 const manifestPath = path.join(harness, 'harness.manifest.json');
 const original = fs.readFileSync(manifestPath, 'utf8');
