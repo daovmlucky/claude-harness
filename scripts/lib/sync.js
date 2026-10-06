@@ -165,18 +165,23 @@ function createSyncWorktree(productRoot, version) {
   const dir = path.join(path.dirname(productRoot), `${path.basename(productRoot)}-sync`);
   if (fs.existsSync(dir)) {
     const current = gitOut(['branch', '--show-current'], dir);
-    if (current === branch) return { dir, branch, reused: true };
+    if (current === branch) return { dir, branch, reused: true, base: null };
     throw new Error(`${dir} already exists (${current ? `on branch "${current}"` : 'not a git worktree'}); move it away or remove it, then retry`);
   }
   if (gitOut(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], productRoot)) {
     throw new Error(`branch ${branch} already exists from an earlier sync; delete it with: git branch -D ${branch} (or bump harnessVersion) and retry`);
   }
+  // branch from main explicitly: the product may have an unmerged task branch checked out
+  const base = gitOut(['rev-parse', '--verify', '--quiet', 'refs/heads/main'], productRoot);
+  if (!base) {
+    throw new Error('product has no "main" branch; the sync branch is cut from main, so create or rename the branch to main first');
+  }
   try {
-    execFileSync('git', ['worktree', 'add', '-b', branch, dir], { cwd: productRoot, stdio: 'pipe' });
+    execFileSync('git', ['worktree', 'add', '-b', branch, dir, 'main'], { cwd: productRoot, stdio: 'pipe' });
   } catch (e) {
     throw new Error(`could not create worktree ${dir} on ${branch}: ${String(e.stderr || e.message).trim()}`);
   }
-  return { dir, branch, reused: false };
+  return { dir, branch, reused: false, base: base.slice(0, 7) };
 }
 
 module.exports = { MajorVersionError, planSync, hasChanges, applySync, formatPlan, createSyncWorktree };

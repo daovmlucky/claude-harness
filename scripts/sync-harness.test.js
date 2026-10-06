@@ -343,6 +343,43 @@ try {
   rm(h3); rm(p3); rm(h4); rm(p4);
 }
 
+// --- CLI: the worktree branches from main, not from whatever the product has checked out ---
+{
+  const h7 = mkTmp('sy-h7-');
+  const p7 = mkTmp('sy-p7-');
+  let prod7;
+  try {
+    makeFakeHarness(h7);
+    prod7 = createProduct({ harnessRoot: h7, name: 'base-demo', parentDir: p7, register: false }).target;
+    commitAll(prod7);
+    const mainTip = gitIn(prod7, ['rev-parse', 'main']);
+    gitIn(prod7, ['checkout', '-b', 'task/foo']);
+    write(path.join(prod7, 'feature.txt'), 'feature work\n');
+    commitAll(prod7);
+    const featureTip = gitIn(prod7, ['rev-parse', 'HEAD']);
+    write(path.join(h7, '.claude/commands/a.md'), 'a v2\n');
+    const dir7 = path.join(p7, 'base-demo-sync');
+    const r = run([prod7, '--apply', '--harness-root', h7]);
+    check('--apply from a feature branch exits 0', r.code === 0);
+    check('sync worktree starts at main, not at the checked-out feature branch',
+      gitIn(dir7, ['rev-parse', 'HEAD']) === mainTip && gitIn(dir7, ['rev-parse', 'HEAD']) !== featureTip);
+    check('sync worktree does not contain the feature commit', !fs.existsSync(path.join(dir7, 'feature.txt')));
+    check('the CLI prints the base commit', r.out.includes(`base ${mainTip.slice(0, 7)}`));
+    gitIn(prod7, ['worktree', 'remove', '--force', dir7]);
+    gitIn(prod7, ['branch', '-D', 'chore/harness-sync-v1.0.0']);
+
+    // no local main branch: clear error, nothing created
+    gitIn(prod7, ['branch', '-m', 'main', 'trunk']);
+    const nm = run([prod7, '--apply', '--harness-root', h7]);
+    check('a product without a main branch is refused clearly', nm.code === 1 && /product has no "main" branch/.test(nm.out));
+    check('the no-main refusal creates no worktree and no branch',
+      !fs.existsSync(dir7) && gitIn(prod7, ['branch', '--list', 'chore/*']) === '');
+  } finally {
+    if (prod7) { try { execFileSync('git', ['worktree', 'remove', '--force', path.join(p7, 'base-demo-sync')], { cwd: prod7, stdio: 'ignore' }); } catch (e) { /* already gone */ } }
+    rm(h7); rm(p7);
+  }
+}
+
 // --- CLI: --all resilience, conflict-only exit code, reused-worktree conflicts ---
 const h5 = mkTmp('sy-h5-');
 const p5 = mkTmp('sy-p5-');

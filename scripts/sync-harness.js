@@ -55,7 +55,7 @@ function syncOne(harnessRoot, name, dir, { apply, inPlace }) {
   const wtPlan = planSync(harnessRoot, wt.dir);
   console.log(formatPlan(`${name} (worktree)`, wtPlan));
   applySync(harnessRoot, wt.dir, wtPlan);
-  console.log(`  applied in ${wt.dir} on branch ${wt.branch}`);
+  console.log(`  applied in ${wt.dir} on branch ${wt.branch}${wt.base ? ` (base ${wt.base}, main)` : ''}`);
   console.log(`  nothing was committed and ${dir} was not touched`);
   console.log(`  review:   git -C "${wt.dir}" diff`);
   console.log('  then commit, open a PR, and merge it between two stages, never in the middle of one');
