@@ -14,10 +14,14 @@ const {
 const { readRegistry } = require('./lib/registry');
 const { changelogBetween } = require('./lib/version');
 const { parseArgs } = require('./lib/args');
+const { adoptProduct } = require('./lib/adopt');
 
 function usage(prefix) {
   if (prefix) console.error(`sync-harness: ${prefix}`);
-  console.error('usage: sync-harness.js <product-dir> | --all [--apply] [--in-place]');
+  console.error('usage: sync-harness.js <product-dir> | --all [--apply] [--in-place] [--base <branch>]');
+  console.error('       sync-harness.js --adopt <product-dir>');
+  console.error('  --adopt records an older repo (not made by new-product.js) so it can be synced; it writes only .claude/.harness-version');
+  console.error('  --base picks the branch the sync worktree is cut from (default: main, else master); single repo only');
   console.error('  --in-place is an emergency/testing exception: it writes into the product directory (single repo only)');
   process.exit(1);
 }
@@ -32,7 +36,7 @@ function printChangelog(harnessRoot, plan) {
   }
 }
 
-function syncOne(harnessRoot, name, dir, { apply, inPlace }) {
+function syncOne(harnessRoot, name, dir, { apply, inPlace, base }) {
   let plan;
   try {
     plan = planSync(harnessRoot, dir);
@@ -52,12 +56,12 @@ function syncOne(harnessRoot, name, dir, { apply, inPlace }) {
     console.log('  applied in place (nothing committed)');
     return;
   }
-  const wt = createSyncWorktree(dir, plan.versionTo);
+  const wt = createSyncWorktree(dir, plan.versionTo, base);
   if (wt.reused) console.log(`  reusing existing worktree ${wt.dir}`);
   const wtPlan = planSync(harnessRoot, wt.dir);
   console.log(formatPlan(`${name} (worktree)`, wtPlan));
   applySync(harnessRoot, wt.dir, wtPlan);
-  console.log(`  applied in ${wt.dir} on branch ${wt.branch}${wt.base ? ` (base ${wt.base}, main)` : ''}`);
+  console.log(`  applied in ${wt.dir} on branch ${wt.branch}${wt.base ? ` (base ${wt.base}, ${wt.baseName})` : ''}`);
   console.log(`  nothing was committed and ${dir} was not touched`);
   console.log(`  review:   git -C "${wt.dir}" diff`);
   console.log('  then commit, open a PR, and merge it between two stages, never in the middle of one');
@@ -67,7 +71,7 @@ function syncOne(harnessRoot, name, dir, { apply, inPlace }) {
 function main() {
   let parsed;
   try {
-    parsed = parseArgs(process.argv.slice(2), { values: ['--harness-root'], flags: ['--all', '--apply', '--in-place'] });
+    parsed = parseArgs(process.argv.slice(2), { values: ['--harness-root', '--base'], flags: ['--all', '--apply', '--in-place', '--adopt'] });
   } catch (e) {
     usage(e.message);
   }
@@ -77,9 +81,34 @@ function main() {
   if (!all && !parsed.positional.length) usage();
   const target = all ? '--all' : parsed.positional[0];
   const harnessRoot = path.resolve(parsed.values['--harness-root'] || path.join(__dirname, '..'));
-  const options = { apply: parsed.flags.has('--apply'), inPlace: parsed.flags.has('--in-place') };
+  const options = { apply: parsed.flags.has('--apply'), inPlace: parsed.flags.has('--in-place'), base: parsed.values['--base'] };
   if (target === '--all' && options.inPlace) {
     console.error('sync failed: --in-place cannot be combined with --all');
+    process.exit(1);
+  }
+  if (parsed.flags.has('--adopt')) {
+    if (all || options.apply || options.inPlace || options.base !== undefined) {
+      console.error('sync failed: --adopt cannot be combined with --all, --apply, --in-place or --base');
+      process.exit(1);
+    }
+    try {
+      const r = adoptProduct({ harnessRoot, productDir: target });
+      console.log(`adopted ${r.dir} at harness ${r.version}`);
+      console.log(`  recorded ${r.identical.length} identical file(s); ${r.differs.length} differ (reported as conflicts, never overwritten); ${r.missing.length} missing (added by the next sync); ${r.skipped.length} skipped by .claude/harness.skip.json`);
+      for (const f of r.differs) console.log(`  differs  ${f}`);
+      for (const f of r.missing) console.log(`  missing  ${f}`);
+      console.log('  wrote .claude/.harness-version; nothing was committed');
+      console.log('  next: commit it on the base branch, then do a dry run:');
+      console.log(`    git -C "${r.dir}" add .claude/.harness-version && git -C "${r.dir}" commit -m "chore: adopt harness sync"`);
+      console.log(`    node scripts/sync-harness.js "${r.dir}"`);
+      process.exit(0);
+    } catch (e) {
+      console.error(`sync failed: ${e.message}`);
+      process.exit(1);
+    }
+  }
+  if (target === '--all' && options.base !== undefined) {
+    console.error('sync failed: --base cannot be combined with --all');
     process.exit(1);
   }
   let failed = false;

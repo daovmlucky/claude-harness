@@ -26,3 +26,27 @@ the product: a sync only warns about deny rules from the template that are
 missing, so add those by hand.
 
 Exception: `sync-harness.js <repo> --apply --in-place` writes straight into the product directory. It is for emergencies and tests only, works on a single repo, and is refused together with `--all`. Normal syncs always go through the `<product>-sync` worktree.
+
+## Bringing an older repo under the sync
+
+A repo made before `new-product.js` existed has no `.claude/.harness-version`, so sync
+refuses it. Record it once:
+
+    node scripts/sync-harness.js --adopt <repo>
+
+This writes only `.claude/.harness-version`, listing the managed files that are identical
+to the harness (files the repo lists in `.claude/harness.skip.json` are ignored). Files that differ are reported as conflicts by later syncs and are never
+overwritten; files that are missing are added. It commits nothing: commit the new file on
+the base branch yourself, then run a dry run and `--apply` as usual. The sync worktree is
+cut from `main`, else `master`; for any other branch pass `--base <branch>`.
+
+### Opting out of a file
+
+To keep a repo from receiving a managed file that is not generic for it, list the file in
+the repo's own `.claude/harness.skip.json`:
+
+    { "skip": [".claude/workflows/product-brainstorm.js"] }
+
+Sync and `--adopt` then ignore those paths: they are never added, updated, reported as
+conflicts or removed. The file belongs to the repo, so sync never writes it. An entry that
+is not a managed file is reported as a probable typo.

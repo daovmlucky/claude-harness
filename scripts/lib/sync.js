@@ -5,11 +5,12 @@ const { execFileSync } = require('child_process');
 const { listManaged, readManifest, copyFile, sha256, walk, toPosix } = require('./fsutil');
 const { harnessState, gitOut } = require('./git');
 const { major } = require('./version');
+const { readSkip } = require('./skip');
 
 class MajorVersionError extends Error {}
 
 // files sync must never touch, even if a version file lists them
-const PROTECTED = ['.claude/settings.json', '.claude/settings.local.json', '.claude/.harness-version'];
+const PROTECTED = ['.claude/settings.json', '.claude/settings.local.json', '.claude/.harness-version', '.claude/harness.skip.json'];
 
 function versionPath(productRoot) {
   return path.join(productRoot, '.claude', '.harness-version');
@@ -58,10 +59,15 @@ function planSync(harnessRoot, productRoot) {
       throw new Error(`unsafe path in .harness-version: ${rel}`);
     }
   }
-  const wanted = listManaged(harnessRoot);
+  const skipList = readSkip(productRoot);
+  const skip = new Set(skipList);
+  const allManaged = listManaged(harnessRoot);
+  const wanted = allManaged.filter((r) => !skip.has(r));
   const plan = {
     add: [], update: [], remove: [], conflict: [], kept: [], current: [], refresh: [],
     versionFrom, versionTo, settingsMissing: [],
+    skipped: allManaged.filter((r) => skip.has(r)),
+    skipUnknown: skipList.filter((r) => !allManaged.includes(r)),
   };
 
   for (const rel of wanted) {
@@ -84,7 +90,7 @@ function planSync(harnessRoot, productRoot) {
   const existingClaude = new Set(fs.existsSync(claudeDir)
     ? walk(claudeDir).map((f) => toPosix(path.relative(productRoot, f))) : []);
   for (const rel of Object.keys(recorded)) {
-    if (wanted.includes(rel)) continue;
+    if (wanted.includes(rel) || skip.has(rel)) continue;
     const dstPath = path.join(productRoot, rel);
     if (!fs.existsSync(dstPath)) continue;
     // never delete anything outside .claude/ or anything that is not a real, case-exact entry
@@ -143,6 +149,8 @@ function formatPlan(name, plan) {
   for (const k of ['add', 'update', 'remove']) for (const f of plan[k]) lines.push(`  ${k.padEnd(8)} ${f}`);
   for (const f of plan.conflict) lines.push(`  CONFLICT ${f}  (edited in the product, not overwritten)`);
   for (const f of plan.kept) lines.push(`  kept     ${f}  (local edit, harness unchanged)`);
+  for (const f of plan.skipped) lines.push(`  skipped  ${f}  (this repo opts out in .claude/harness.skip.json)`);
+  for (const f of plan.skipUnknown) lines.push(`  WARN     skip entry ${f} is not a managed file (typo?)`);
   for (const c of newCommands(plan)) lines.push(`  new: ${c} - see CHANGELOG`);
   for (const r of plan.settingsMissing) {
     lines.push(`  settings: missing deny rule "${r}" - add it to .claude/settings.json by hand`);
@@ -152,7 +160,25 @@ function formatPlan(name, plan) {
 
 // Apply happens in a separate worktree so a Claude Code session running in the
 // product's own directory never sees files change under it. Never commits.
-function createSyncWorktree(productRoot, version) {
+const BRANCH_RE = /^[A-Za-z0-9][A-Za-z0-9._\/-]*$/;
+
+// The branch the sync worktree is cut from: --base, else main, else master.
+function pickBase(productRoot, want) {
+  const sha = (b) => gitOut(['rev-parse', '--verify', '--quiet', `refs/heads/${b}`], productRoot);
+  if (want !== undefined) {
+    if (!BRANCH_RE.test(want)) throw new Error(`invalid --base "${want}"`);
+    const s = sha(want);
+    if (!s) throw new Error(`product has no "${want}" branch (given with --base)`);
+    return { name: want, sha: s };
+  }
+  for (const b of ['main', 'master']) {
+    const s = sha(b);
+    if (s) return { name: b, sha: s };
+  }
+  throw new Error('product has no "main" branch (and no "master"); the sync branch is cut from the base branch, so name it main or master, or pass --base <branch>');
+}
+
+function createSyncWorktree(productRoot, version, baseBranch) {
   const status = gitOut(['status', '--porcelain', '--', '.claude'], productRoot);
   if (status === null) throw new Error(`not a git repository: ${productRoot}`);
   if (gitOut(['rev-parse', 'HEAD'], productRoot) === null) {
@@ -165,23 +191,20 @@ function createSyncWorktree(productRoot, version) {
   const dir = path.join(path.dirname(productRoot), `${path.basename(productRoot)}-sync`);
   if (fs.existsSync(dir)) {
     const current = gitOut(['branch', '--show-current'], dir);
-    if (current === branch) return { dir, branch, reused: true, base: null };
+    if (current === branch) return { dir, branch, reused: true, base: null, baseName: null };
     throw new Error(`${dir} already exists (${current ? `on branch "${current}"` : 'not a git worktree'}); move it away or remove it, then retry`);
   }
   if (gitOut(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], productRoot)) {
     throw new Error(`branch ${branch} already exists from an earlier sync; delete it with: git branch -D ${branch} (or bump harnessVersion) and retry`);
   }
-  // branch from main explicitly: the product may have an unmerged task branch checked out
-  const base = gitOut(['rev-parse', '--verify', '--quiet', 'refs/heads/main'], productRoot);
-  if (!base) {
-    throw new Error('product has no "main" branch; the sync branch is cut from main, so create or rename the branch to main first');
-  }
+  // branch from the base branch explicitly: the product may have an unmerged task branch checked out
+  const base = pickBase(productRoot, baseBranch);
   try {
-    execFileSync('git', ['worktree', 'add', '-b', branch, dir, 'main'], { cwd: productRoot, stdio: 'pipe' });
+    execFileSync('git', ['worktree', 'add', '-b', branch, dir, base.sha], { cwd: productRoot, stdio: 'pipe' });
   } catch (e) {
     throw new Error(`could not create worktree ${dir} on ${branch}: ${String(e.stderr || e.message).trim()}`);
   }
-  return { dir, branch, reused: false, base: base.slice(0, 7) };
+  return { dir, branch, reused: false, base: base.sha.slice(0, 7), baseName: base.name };
 }
 
 module.exports = { MajorVersionError, planSync, hasChanges, applySync, formatPlan, createSyncWorktree };
