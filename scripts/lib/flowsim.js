@@ -60,7 +60,16 @@ function makeWorld(init = {}) {
       const m = /<<<STATE\n([\s\S]*?)\nSTATE>>>/.exec(call.prompt);
       const state = JSON.parse(m[1]);
       const r = /<<<REPORT\n([\s\S]*?)\nREPORT>>>/.exec(call.prompt);
-      if (w.saveMissing.length) return { savedCompleted: [], failure: 'a required file is missing', missing: w.saveMissing };
+      if (w.saveMissing.length) {
+        // like the real save agent: write the ROLLBACK block of the earliest step whose required file is missing
+        const step = STEPS.find((s) => (DEFAULT_ARTIFACTS[s] || []).some((p) => w.saveMissing.includes(p)));
+        const rb = step && new RegExp(`<<<ROLLBACK ${step}\\n([\\s\\S]*?)\\nROLLBACK>>>`).exec(call.prompt);
+        if (!rb) throw new Error(`no ROLLBACK block for step "${step}" in the save prompt`);
+        const parsed = JSON.parse(rb[1]);
+        w.files['docs/flow-state.json'] = rb[1];
+        w.saves.push(parsed);
+        return { savedCompleted: parsed.completed, failure: parsed.failure, missing: w.saveMissing };
+      }
       w.files['docs/flow-state.json'] = m[1];
       w.saves.push(state);
       if (r) w.reports.push(r[1]);

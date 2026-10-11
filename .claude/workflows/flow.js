@@ -153,28 +153,41 @@ function describe(st, gates) {
   return lines.join('\n');
 }
 
+// Every string an agent wrote (blockers, failures, summaries) ends up in the save prompt
+// between delimiter lines, so no run of three or more < or > may survive in it.
+const clean = (s) => String(s).replace(/<{3,}/g, '<<').replace(/>{3,}/g, '>>');
+
 function savePrompt(cur, report) {
-  const stateJson = JSON.stringify(
-    { flowSchema: 1, task: cur.task, completed: cur.completed, approved: cur.approved, failure: cur.failure },
-    null,
-    2,
-  );
+  const base = { flowSchema: 1, task: cur.task };
+  const stateJson = clean(JSON.stringify({ ...base, completed: cur.completed, approved: cur.approved, failure: cur.failure }, null, 2));
+  // For each completed step that needs a file: the state to write if that file is missing.
+  const rollbacks = cur.completed.filter((s) => REQUIRED_ARTIFACTS[s]).map((step) => {
+    const kept = cur.completed.slice(0, cur.completed.indexOf(step));
+    const rolled = {
+      ...base,
+      completed: kept,
+      approved: cur.approved.filter((a) => kept.includes(a)),
+      failure: `${step}: required file ${REQUIRED_ARTIFACTS[step].join(', ')} is missing`,
+    };
+    return { step, json: clean(JSON.stringify(rolled, null, 2)) };
+  });
   const todo = [
-    'Write the JSON between <<<STATE and STATE>>> to docs/flow-state.json exactly as given (create docs/ if it does not exist).',
-    `For every step in "completed", check that its required file exists: ${JSON.stringify(REQUIRED_ARTIFACTS)}. If a file is missing, rewrite docs/flow-state.json without that step and without every step after it, set "failure" to a short reason that names the file, and list the missing paths in "missing".`,
+    `Check that every step in "completed" of the STATE block has its required file in the repository: ${JSON.stringify(REQUIRED_ARTIFACTS)}.`,
+    'Write docs/flow-state.json ONCE (create docs/ if it does not exist). If no required file is missing, write the STATE block exactly as given. If a required file is missing, write instead the ROLLBACK block of the EARLIEST step whose file is missing, exactly as given and never edited. Do not write the file twice.',
   ];
   if (report) {
-    todo.push('Put the text between <<<REPORT and REPORT>>> in docs/run-log.md under the heading "## Fix-loop (flow)", replacing the existing section with that heading if there is one.');
+    todo.push('Put the text of the REPORT block in docs/run-log.md under the heading "## Fix-loop (flow)", replacing the existing section with that heading if there is one.');
   }
   const parts = [
     'Save the state of the flow. Do exactly the numbered tasks and nothing else. Do not commit, do not push and do not change any other file.',
     ...todo.map((t, i) => `${i + 1}. ${t}`),
-    'Return savedCompleted (the completed list you saved), failure (the failure text you saved, empty if none) and missing (the missing required paths, empty if none).',
+    'Return savedCompleted (the completed list you actually wrote), failure (the failure text you wrote, empty if none) and missing (the missing required paths, empty if none).',
     '<<<STATE',
     stateJson,
     'STATE>>>',
   ];
-  if (report) parts.push('<<<REPORT', report, 'REPORT>>>');
+  if (report) parts.push('<<<REPORT', clean(report), 'REPORT>>>');
+  for (const rb of rollbacks) parts.push(`<<<ROLLBACK ${rb.step}`, rb.json, 'ROLLBACK>>>');
   return parts.join('\n');
 }
 
@@ -187,8 +200,10 @@ const STATE_PROMPT = [
 
 const normalizePath = (p) => String(p).replace(/\\/g, '/').replace(/^\.\//, '');
 
-function stepPrompt(step, task) {
-  return [
+const DELIVER_NOTE = 'The fix-loop of this run ended GREEN: tests passed and the independent review said PASS. Its record is under "## Fix-loop (flow)" in docs/run-log.md.';
+
+function stepPrompt(step, task, extra) {
+  const lines = [
     `You are running the "${step}" step of the harness delivery flow.`,
     `Task: ${task}`,
     '',
@@ -197,7 +212,9 @@ function stepPrompt(step, task) {
     `3. ${NO_PUSH} Commit only if the step file asks you to, and only on a feature branch.`,
     '4. If docs/run-log.md already has a section for this step, replace it instead of adding a duplicate.',
     '5. Report through the structured result: status "done" (or "failed", with the reason in summary), a one-line summary, and artifacts = the repo-relative paths of the files you wrote or changed. List a path only if the file exists.',
-  ].join('\n');
+  ];
+  if (extra) lines.push(`6. ${extra}`);
+  return lines.join('\n');
 }
 
 function stepProblem(step, out) {
@@ -244,8 +261,8 @@ async function fixLoop(task) {
       rounds.push({ round, note: `the ${who} agent did not return a result` });
       return { green: false, rounds, reason: `round ${round}: the ${who} agent did not return a result` };
     }
-    rounds.push({ round, testPassed: test.passed, command: test.command, verdict: review.verdict, blockers: review.blockers, failures: test.failures });
-    if (test.passed && review.verdict === 'PASS' && review.blockers.length === 0) return { green: true, rounds, reason: '' };
+    rounds.push({ round, testPassed: test.passed === true, command: test.command, verdict: review.verdict, blockers: review.blockers, failures: test.failures });
+    if (test.passed === true && test.failures.length === 0 && review.verdict === 'PASS' && review.blockers.length === 0) return { green: true, rounds, reason: '' };
     if (round === MAX_ROUNDS) return { green: false, rounds, reason: `still not green after ${MAX_ROUNDS} rounds` };
     const signature = JSON.stringify([test.passed, [...test.failures].sort(), [...review.blockers].sort()]);
     if (signature === previous) {
@@ -294,6 +311,19 @@ async function approve(step, st, gates) {
   return result('approved', `Approved "${step}". ${hint}`, { approved: next.approved });
 }
 
+const saveAgent = (cur, report) => agent(savePrompt(cur, report), { label: 'save', phase: 'Save', schema: SAVE_SCHEMA, ...TIERS.save });
+
+// null when the save went through; otherwise the failed result to return
+function savedProblem(saved) {
+  if (!saved) {
+    return result('failed', 'The steps ran, but docs/flow-state.json could not be saved (the save agent did not return). Check docs/ before running /flow again.');
+  }
+  if (saved.missing.length) {
+    return result('failed', `Required file(s) missing: ${saved.missing.join(', ')}. ${saved.failure} Run /flow to retry from "${STEPS[saved.savedCompleted.length]}".`, { completed: saved.savedCompleted, failure: saved.failure });
+  }
+  return null;
+}
+
 async function runSegment(start, gates) {
   const cur = { task: start.task, completed: [...start.completed], approved: [...start.approved], failure: '' };
   const reports = [];
@@ -309,7 +339,7 @@ async function runSegment(start, gates) {
         break;
       }
     } else {
-      const out = await agent(stepPrompt(step, cur.task), { label: step, phase: 'Steps', schema: STEP_SCHEMA, ...TIERS.step });
+      const out = await agent(stepPrompt(step, cur.task, step === 'deliver' ? DELIVER_NOTE : undefined), { label: step, phase: 'Steps', schema: STEP_SCHEMA, ...TIERS.step });
       const problem = stepProblem(step, out);
       if (problem) {
         cur.failure = `${step}: ${problem}`;
@@ -319,16 +349,21 @@ async function runSegment(start, gates) {
     }
     cur.completed.push(step);
     if (gates.includes(step)) break;
+    if (step === 'fix-loop') {
+      // deliver reads the fix-loop record in docs/run-log.md, so write it before deliver runs
+      const early = savedProblem(await saveAgent(cur, reports.join('\n')));
+      if (early) return early;
+      reports.length = 0;
+    }
   }
 
-  const saved = await agent(savePrompt(cur, reports.join('\n')), { label: 'save', phase: 'Save', schema: SAVE_SCHEMA, ...TIERS.save });
-  if (!saved) {
-    return result('failed', 'The steps ran, but docs/flow-state.json could not be saved (the save agent did not return). Check docs/ before running /flow again.', { completed: cur.completed });
-  }
+  const saved = await saveAgent(cur, reports.join('\n'));
+  const stop = savedProblem(saved);
+  if (stop) return stop;
   const done = saved.savedCompleted;
   const retry = STEPS[done.length];
-  if (saved.missing.length) {
-    return result('failed', `Required file(s) missing: ${saved.missing.join(', ')}. ${saved.failure} Run /flow to retry from "${retry}".`, { completed: done, failure: saved.failure });
+  if (done.length !== cur.completed.length) {
+    return result('failed', `The save agent saved ${done.length} step(s) but ${cur.completed.length} were completed; check docs/flow-state.json before running /flow again.`, { completed: done });
   }
   if (outcome === 'failed') {
     return result('failed', `Stopped: ${cur.failure}. Fix the cause, then run /flow to retry from "${retry}".`, { completed: done, failure: cur.failure });
