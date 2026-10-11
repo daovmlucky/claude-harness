@@ -42,12 +42,6 @@ product repos are created from.
   `<product>-sync` worktree.
 - Full usage: see docs/bootstrap.md.
 
-## /flow
-`/flow` (see `docs/flow.md`) runs the 8-step pipeline as a workflow up to the next
-human gate. Step content comes from `.claude/commands/`; change a step there, not in
-`flow.js`. `scripts/flow.test.js` tests the control flow with no tokens
-(`npm test`); `scripts/flow-report.js` reports what a run cost.
-
 ### Classifying a harness change (decides the version bump)
 A change is **not breaking** only if all four hold:
 1. State files a product already has (`gates.json`, `spec.md`, `backlog.md`) stay valid unchanged.
@@ -65,3 +59,9 @@ A new blocking quality gate is minor only if products opt in to enforcement
 themselves; switching it on for every repo is major. Products on an old major
 line are patched by keeping a `vN` branch of this repo and running
 `sync-harness.js` with `--harness-root` pointing at a worktree of that branch.
+
+## /flow
+`/flow` (see `docs/flow.md`) runs the 8-step pipeline as a workflow up to the next
+human gate. Step content comes from `.claude/commands/`; change a step there, not in
+`flow.js`. `scripts/flow.test.js` tests the control flow with no tokens
+(`npm test`); `scripts/flow-report.js` reports what a run cost.

@@ -1,4 +1,4 @@
-// flow-report.js — read Claude Code's workflow run records and total the token usage.
+// flow-report.js - read Claude Code's workflow run records and total the token usage.
 // Layout (internal to Claude Code, observed on 2.1.289):
 //   <projects>/<project>/<session>/subagents/workflows/wf_<id>/agent-<id>.{jsonl,meta.json}
 // Each API message is logged on several lines, so usage is counted once per message id.
@@ -26,6 +26,15 @@ function listRuns(projectDir) {
     }
   }
   return runs.sort((a, b) => b.mtimeMs - a.mtimeMs);
+}
+
+// A /flow run has an agent labelled "state" (first) and one labelled "save" (last).
+function isFlowRun(dir) {
+  const labels = new Set();
+  for (const f of fs.readdirSync(dir).filter((n) => /^agent-.*.meta.json$/.test(n))) {
+    try { labels.add(JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')).description); } catch (e) { /* unreadable meta: not a label */ }
+  }
+  return labels.has('state') && labels.has('save');
 }
 
 function readAgent(file) {
@@ -86,7 +95,7 @@ function summarize(agents) {
 // Console and docs output is ASCII only: accents are stripped, control characters
 // (newlines, tabs) become a space, anything else non-ASCII becomes "?".
 const ascii = (s) => String(s)
-  .normalize('NFD').replace(/[̀-ͯ]/g, '')
+  .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
   .replace(/[\x00-\x1f\x7f]+/g, ' ')
   .replace(/[^\x20-\x7e]/g, '?');
 
@@ -113,4 +122,4 @@ function formatReport(run) {
   return lines.join('\n');
 }
 
-module.exports = { projectDirName, findProjectDir, listRuns, readRun, summarize, formatReport, ascii };
+module.exports = { projectDirName, findProjectDir, listRuns, isFlowRun, readRun, summarize, formatReport, ascii };

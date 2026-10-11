@@ -32,7 +32,8 @@ function main() {
       return;
     }
     const wanted = a.values['--run'];
-    const pick = wanted ? runs.find((r) => r.runId === wanted) : runs[0];
+    const pick = wanted ? runs.find((r) => r.runId === wanted) : runs.find((r) => rep.isFlowRun(r.dir));
+    if (!pick && !wanted) throw new Error('no /flow run found; use --list and --run wf_<id>');
     if (!pick) throw new Error(`run ${wanted} not found; use --list to see the runs`);
     const text = rep.formatReport(rep.readRun(pick.dir));
     console.log(text);

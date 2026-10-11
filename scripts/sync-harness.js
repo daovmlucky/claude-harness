@@ -21,7 +21,7 @@ function usage(prefix) {
   if (prefix) console.error(`sync-harness: ${prefix}`);
   console.error('usage: sync-harness.js <product-dir> | --all [--apply] [--in-place] [--base <branch>]');
   console.error('       sync-harness.js --adopt <product-dir>');
-  console.error('  --adopt records an older repo (not made by new-product.js) so it can be synced; it writes only .claude/.harness-version');
+  console.error('  --adopt records an older repo (not made by new-product.js) so it can be synced; it writes only .claude/.harness-version in the repo and registers the repo in the harness\'s .harness/products.json');
   console.error('  --base picks the branch the sync worktree is cut from (default: main, else master); single repo only');
   console.error('  --in-place is an emergency/testing exception: it writes into the product directory (single repo only)');
   process.exit(1);

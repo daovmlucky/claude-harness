@@ -121,6 +121,7 @@ check('AC8 /* block */ comments are ignored', workflowProblems('/* new Date() im
 check('AC8 Date.now is rejected', workflowProblems('export const meta = { name: "x", description: "y" };\nconst t = Date.now();\n').some((p) => /Date\.now/.test(p)));
 check('AC8 Math.random is rejected', workflowProblems('export const meta = { name: "x", description: "y" };\nMath.random();\n').some((p) => /Math\.random/.test(p)));
 check('AC8 argless new Date() is rejected', workflowProblems('export const meta = { name: "x", description: "y" };\nnew Date();\n').some((p) => /new Date/.test(p)));
+check('AC8 argless new  Date() with two spaces is rejected', workflowProblems('export const meta = { name: "x", description: "y" };\nnew  Date();\n').some((p) => /new Date/.test(p)));
 check('AC8 new Date(x) is allowed', workflowProblems('export const meta = { name: "x", description: "y" };\nnew Date(0);\n').length === 0);
 check('AC8 import() is rejected', workflowProblems('export const meta = { name: "x", description: "y" };\nimport("fs");\n').some((p) => /import\(\)/.test(p)));
 check('AC8 a file without meta first is rejected', workflowProblems('const a = 1;\nexport const meta = {};\n').some((p) => /export const meta/.test(p)));

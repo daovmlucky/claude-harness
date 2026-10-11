@@ -51,7 +51,7 @@ function workflowProblems(src) {
     [/\bimport\s*\(/, 'import() is not allowed in a workflow script'],
     [/\bDate\.now\b/, 'Date.now is disabled in workflow scripts'],
     [/\bMath\.random\b/, 'Math.random is disabled in workflow scripts'],
-    [/\bnew Date\(\s*\)/, 'new Date() without arguments is disabled in workflow scripts'],
+    [/\bnew\s+Date\(\s*\)/, 'new Date() without arguments is disabled in workflow scripts'],
   ];
   for (const [re, msg] of banned) if (re.test(code)) problems.push(msg);
   return problems;

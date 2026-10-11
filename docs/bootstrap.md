@@ -34,7 +34,7 @@ refuses it. Record it once:
 
     node scripts/sync-harness.js --adopt <repo>
 
-This writes only `.claude/.harness-version`, listing the managed files that are identical
+This writes only `.claude/.harness-version` in the repo and registers the repo in the harness's `.harness/products.json`. The version file lists the managed files that are identical
 to the harness (files the repo lists in `.claude/harness.skip.json` are ignored). Files that differ are reported as conflicts by later syncs and are never
 overwritten; files that are missing are added. It commits nothing: commit the new file on
 the base branch yourself, then run a dry run and `--apply` as usual. The sync worktree is

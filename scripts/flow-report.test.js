@@ -23,6 +23,9 @@ function buildRun(projectsRoot, repoPath, runId = 'wf_aaa111') {
   ].join('\n') + '\n');
   write(path.join(dir, 'agent-a2.meta.json'), JSON.stringify({ description: 'save', workflowPhase: 'Save' }));
   write(path.join(dir, 'agent-a2.jsonl'), line('m9', usage(5, 7, 0, 40)) + '\n');
+  // a /flow run always starts with an agent labelled "state" (no usage lines here, so the totals below are unchanged)
+  write(path.join(dir, 'agent-a3.meta.json'), JSON.stringify({ description: 'state', workflowPhase: 'State' }));
+  write(path.join(dir, 'agent-a3.jsonl'), '');
   return dir;
 }
 
@@ -74,7 +77,7 @@ function cli(args) {
 let c = cli(['--project', repo, '--projects-dir', projects]);
 check('CLI prints the newest run', c.code === 0 && /wf_aaa111/.test(c.out) && /TOTAL/.test(c.out));
 c = cli(['--project', repo, '--projects-dir', projects, '--list']);
-check('CLI --list lists runs', c.code === 0 && /wf_aaa111/.test(c.out) && /2 agents/.test(c.out));
+check('CLI --list lists runs', c.code === 0 && /wf_aaa111/.test(c.out) && /3 agents/.test(c.out));
 c = cli(['--project', repo, '--projects-dir', projects, '--run', 'wf_zzz']);
 check('CLI reports an unknown run', c.code === 1 && /wf_zzz/.test(c.out));
 c = cli(['--project', repo, '--projects-dir', projects, '--run']);
@@ -119,9 +122,48 @@ check('(c) a label with a newline and a tab adds no table lines', ln.length === 
 check('(c) control characters in a label become spaces', longText.includes('line one line two'));
 check('(d) the header separates output and cache_read', /output\s+cache_read/.test(longText));
 
-c = cli(['--project', longRepo, '--projects-dir', longProjects, '--append']);
+c = cli(['--project', longRepo, '--projects-dir', longProjects, '--run', 'wf_bbb222', '--append']);
 const longLog = fs.readFileSync(path.join(longRepo, 'docs', 'flow-cost.md'), 'utf8');
 check('(e) --append writes ASCII only and the label text', c.code === 0 && /^[\x20-\x7e\n]*$/.test(longLog) && longLog.includes('line one line two') && /^[\x20-\x7e\n]*$/.test(c.out));
+
+// M5: the default run is the newest /flow run (agents labelled "state" and "save"), not just the newest run
+const mixRepo = path.join(root, 'Mixed Repo');
+fs.mkdirSync(mixRepo);
+const mixProjects = path.join(root, 'projects-mixed');
+const mixWf = path.join(mixProjects, rep.projectDirName(mixRepo).toLowerCase(), 'session-3', 'subagents', 'workflows');
+function mkRun(id, labels, ageSeconds) {
+  const d = path.join(mixWf, id);
+  labels.forEach((label, i) => {
+    write(path.join(d, `agent-${i}.meta.json`), JSON.stringify({ description: label, workflowPhase: 'P' }));
+    write(path.join(d, `agent-${i}.jsonl`), line(`${id}-${i}`, usage(1, 1, 1, 1)) + '\n');
+  });
+  const t = new Date(Date.UTC(2026, 0, 1) + (1000 - ageSeconds) * 1000);
+  fs.utimesSync(d, t, t);
+}
+mkRun('wf_flowold', ['state', 'explore', 'save'], 500);
+mkRun('wf_othernew', ['research', 'synthesize'], 10);
+check('the fixture has the non-flow run as the newest', rep.listRuns(rep.findProjectDir(mixRepo, mixProjects))[0].runId === 'wf_othernew');
+c = cli(['--project', mixRepo, '--projects-dir', mixProjects]);
+check('M5: the default picks the newest /flow run', c.code === 0 && /wf_flowold/.test(c.out) && !/wf_othernew/.test(c.out));
+c = cli(['--project', mixRepo, '--projects-dir', mixProjects, '--run', 'wf_othernew']);
+check('M5: --run stays exact', c.code === 0 && /wf_othernew/.test(c.out));
+c = cli(['--project', mixRepo, '--projects-dir', mixProjects, '--list']);
+check('M5: --list still lists every run', c.code === 0 && /wf_flowold/.test(c.out) && /wf_othernew/.test(c.out));
+const noFlowRepo = path.join(root, 'No Flow Repo');
+fs.mkdirSync(noFlowRepo);
+const noFlowProjects = path.join(root, 'projects-noflow');
+const noFlowWf = path.join(noFlowProjects, rep.projectDirName(noFlowRepo).toLowerCase(), 'session-4', 'subagents', 'workflows', 'wf_plain');
+write(path.join(noFlowWf, 'agent-0.meta.json'), JSON.stringify({ description: 'research', workflowPhase: 'P' }));
+write(path.join(noFlowWf, 'agent-0.jsonl'), line('p0', usage(1, 1, 1, 1)) + '\n');
+c = cli(['--project', noFlowRepo, '--projects-dir', noFlowProjects]);
+check('M5: with only non-flow runs the default exits 1 with a hint', c.code === 1 && /no \/flow run found; use --list and --run wf_<id>/.test(c.out));
+c = cli(['--project', noFlowRepo, '--projects-dir', noFlowProjects, '--run', 'wf_plain']);
+check('M5: --run still reads a non-flow run', c.code === 0 && /wf_plain/.test(c.out));
+
+// M6: the library source is pure ASCII (no raw combining characters)
+const libBytes = fs.readFileSync(path.join(__dirname, 'lib', 'flow-report.js'));
+check('M6: lib/flow-report.js has no byte above 126', libBytes.every((b) => b <= 126));
+check('M6: the accent strip uses escapes', /\\u0300-\\u036f/.test(libBytes.toString('latin1')));
 
 rm(root);
 done('flow-report');

@@ -12,6 +12,15 @@ commands and `/flow` always agree.
 - `/flow approve <step>` records your approval of a gate. It runs nothing.
 - `/flow start <description>` forces a new task whose text starts with a word such as approve.
 
+## Arguments and the spec
+Only the exact forms above are commands. `/flow approve requirements now`, `/flow continue` and
+`/flow Status` are not commands: they start a new task whose description is that text, or are
+refused while a task is in progress.
+
+`/flow` writes `docs/spec.md` (the requirements step) and `docs/plan.md` (the breakdown step) for
+the task you give it, replacing what is there. Use it for a task-sized change, or commit your
+spec first.
+
 ## Gates
 `requirements` (approve the scope) and `deliver` (approve the release) are always gates.
 To add more, create `docs/flow.config.json`:
