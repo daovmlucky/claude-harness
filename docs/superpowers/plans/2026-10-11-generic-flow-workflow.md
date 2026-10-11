@@ -1543,7 +1543,340 @@ rtk git commit -m "feat: add flow-report to total token usage per workflow run" 
 
 ---
 
-### Task 6: Real run, measurement and rollout (needs the user; do not run unattended)
+### Task 7: `sync-harness --adopt` and a configurable base branch (added at the user's request; execute after Task 5 and BEFORE Task 6)
+
+**Why:** repos created before `new-product.js` existed (such as `D:\internal_project\string-art`) have no `.claude/.harness-version`, so sync refuses them; and `string-art` uses `master`, while sync only cut its worktree from `main`.
+
+**Files:**
+- Create: `scripts/lib/adopt.js`, `scripts/adopt.test.js`
+- Modify: `scripts/lib/sync.js` (`createSyncWorktree` + new `pickBase`), `scripts/sync-harness.js`, `package.json`, `docs/bootstrap.md`, `CHANGELOG.md`
+
+**Interfaces:**
+- Produces (`adopt.js`): `adoptProduct({ harnessRoot, productDir, name?, register? = true }) -> { dir, version, identical, differs, missing }` (arrays of relative posix paths). It writes ONLY `<dir>/.claude/.harness-version`, recording `harnessVersion` (the current harness version), `harnessCommit`, `harnessDirty`, `syncedAt` and `files` = hashes of the managed files that are **identical** to the harness. Files that differ or are missing are not recorded, so the next sync reports them as `conflict` (never overwritten) or `add`. It never commits and never touches any other file. Throws: `directory not found`, `not a Claude Code project (no .claude/)`, `already adopted`, `not a git repository`, `harness.manifest.json has no harnessVersion`.
+- Produces (`sync.js`): `createSyncWorktree(productRoot, version, baseBranch?) -> { dir, branch, reused, base, baseName }`. With no `baseBranch` it uses `main`, else `master`; the worktree is cut from the resolved commit SHA (not the branch name, which also avoids the "ambiguous name when a tag has the same name" failure). Errors: `product has no "main" branch (and no "master"); ...` (the existing test regex `/product has no "main" branch/` still matches), `product has no "<name>" branch (given with --base)`, `invalid --base "<name>"`.
+- CLI: `node scripts/sync-harness.js --adopt <repo>`; `node scripts/sync-harness.js <repo> --apply --base <branch>`. `--adopt` cannot be combined with `--all`, `--apply`, `--in-place` or `--base`; `--base` cannot be combined with `--all`.
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `scripts/adopt.test.js`:
+
+```js
+// adopt.test.js — bringing a repo that was not created by new-product.js under the sync.
+const fs = require('fs');
+const path = require('path');
+const { execFileSync } = require('child_process');
+const { makeChecker, mkTmp, write, rm, makeFakeHarness } = require('./lib/testutil');
+const { adoptProduct } = require('./lib/adopt');
+const { planSync, hasChanges } = require('./lib/sync');
+const { readRegistry } = require('./lib/registry');
+const { check, done } = makeChecker();
+
+const GIT = ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false'];
+const git = (dir, args) => execFileSync('git', [...GIT, ...args], { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+const throws = (fn) => { try { fn(); return ''; } catch (e) { return e.message; } };
+const CLI = path.join(__dirname, 'sync-harness.js');
+function cli(args) {
+  try { return { code: 0, out: execFileSync('node', [CLI, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) }; }
+  catch (e) { return { code: e.status, out: `${e.stdout || ''}${e.stderr || ''}` }; }
+}
+function legacyRepo(parent, name, files, branch = 'master') {
+  const dir = path.join(parent, name);
+  fs.mkdirSync(dir, { recursive: true });
+  git(dir, ['init', '-q', '-b', branch]);
+  for (const [rel, text] of Object.entries(files)) write(path.join(dir, rel), text);
+  git(dir, ['add', '-A']);
+  git(dir, ['commit', '-q', '--no-verify', '-m', 'init']);
+  return dir;
+}
+
+const h = mkTmp('ad-h-');
+makeFakeHarness(h); // manages .claude/commands/a.md ('a v1') and .claude/workflows/w.js ('w v1')
+const p = mkTmp('ad-p-');
+const created = [];
+try {
+  // --- an old repo: a.md identical, w.js edited, plus a personal settings file ---
+  const legacy = legacyRepo(p, 'legacy', { '.claude/commands/a.md': 'a v1\n', '.claude/workflows/w.js': 'w mine\n', '.claude/settings.local.json': '{}' });
+  const headBefore = git(legacy, ['rev-parse', 'HEAD']);
+  const res = adoptProduct({ harnessRoot: h, productDir: legacy });
+  const vf = path.join(legacy, '.claude', '.harness-version');
+  const v = JSON.parse(fs.readFileSync(vf, 'utf8'));
+  check('adopt reports the identical file', JSON.stringify(res.identical) === '["' + '.claude/commands/a.md' + '"]');
+  check('adopt reports the differing file', JSON.stringify(res.differs) === '[".claude/workflows/w.js"]' && res.missing.length === 0);
+  check('the version file records the harness version', v.harnessVersion === '1.0.0' && typeof v.syncedAt === 'string');
+  check('only identical files are recorded', JSON.stringify(Object.keys(v.files)) === '[".claude/commands/a.md"]');
+  check('the repo is registered with its resolved path', readRegistry(h).some((r) => r.name === 'legacy' && r.path === path.resolve(legacy)));
+  check('adopt commits nothing', git(legacy, ['rev-parse', 'HEAD']) === headBefore);
+  check('adopt writes exactly one new file', git(legacy, ['status', '--porcelain']) === '?? .claude/.harness-version');
+  check('the differing file is untouched', fs.readFileSync(path.join(legacy, '.claude/workflows/w.js'), 'utf8') === 'w mine\n');
+  const plan = planSync(h, legacy);
+  check('after adopting, the identical file is current', plan.current.join() === '.claude/commands/a.md');
+  check('the edited file is a conflict, never overwritten', plan.conflict.join() === '.claude/workflows/w.js' && plan.update.length === 0);
+  check('an adopted, in-sync repo has nothing to apply', !hasChanges(plan));
+
+  // --- a repo that lacks a managed file: the next sync adds it ---
+  const missing = legacyRepo(p, 'missing', { '.claude/commands/a.md': 'a v1\n' });
+  const res2 = adoptProduct({ harnessRoot: h, productDir: missing, register: false });
+  check('a missing managed file is reported', res2.missing.join() === '.claude/workflows/w.js');
+  check('the next sync would add it', planSync(h, missing).add.join() === '.claude/workflows/w.js');
+  check('register:false leaves the registry alone', !readRegistry(h).some((r) => r.name === 'missing'));
+
+  // --- refusals write nothing ---
+  check('a missing directory is refused', /directory not found/.test(throws(() => adoptProduct({ harnessRoot: h, productDir: path.join(p, 'nope') }))));
+  fs.mkdirSync(path.join(p, 'plain'));
+  check('a folder without .claude is refused', /no \.claude\//.test(throws(() => adoptProduct({ harnessRoot: h, productDir: path.join(p, 'plain') }))));
+  check('adopting twice is refused', /already adopted/.test(throws(() => adoptProduct({ harnessRoot: h, productDir: legacy }))));
+  write(path.join(p, 'nogit', '.claude', 'commands', 'a.md'), 'a v1\n');
+  check('a folder that is not a git repo is refused', /not a git repository/.test(throws(() => adoptProduct({ harnessRoot: h, productDir: path.join(p, 'nogit') }))));
+  check('and gets no version file', !fs.existsSync(path.join(p, 'nogit', '.claude', '.harness-version')));
+  const h2 = mkTmp('ad-h2-');
+  makeFakeHarness(h2);
+  const m = JSON.parse(fs.readFileSync(path.join(h2, 'harness.manifest.json'), 'utf8'));
+  delete m.harnessVersion;
+  write(path.join(h2, 'harness.manifest.json'), JSON.stringify(m));
+  const other = legacyRepo(p, 'other', { '.claude/commands/a.md': 'a v1\n' });
+  check('a harness without a version is refused', /harnessVersion/.test(throws(() => adoptProduct({ harnessRoot: h2, productDir: other, register: false }))));
+  check('and the repo gets no version file', !fs.existsSync(path.join(other, '.claude', '.harness-version')));
+  rm(h2);
+
+  // --- the CLI end to end on a master-branch repo that lacks w.js ---
+  const old = legacyRepo(p, 'old-repo', { '.claude/commands/a.md': 'a v1\n' });
+  const oldSync = path.join(p, 'old-repo-sync');
+  created.push([old, oldSync]);
+  let r = cli(['--adopt', old, '--harness-root', h]);
+  check('CLI --adopt succeeds and says what to do next', r.code === 0 && /adopted/.test(r.out) && /git -C .* add \.claude\/\.harness-version/.test(r.out) && /nothing was committed/.test(r.out));
+  check('CLI --adopt registered the repo', readRegistry(h).some((x) => x.name === 'old-repo'));
+  r = cli([old, '--harness-root', h]);
+  check('a dry run now works and plans the missing file', r.code === 0 && /add\s+\.claude\/workflows\/w\.js/.test(r.out));
+  r = cli([old, '--apply', '--harness-root', h]);
+  check('--apply is refused until the version file is committed', r.code === 1 && /uncommitted changes under \.claude\//.test(r.out));
+  git(old, ['add', '.claude/.harness-version']);
+  git(old, ['commit', '-q', '--no-verify', '-m', 'chore: adopt harness sync']);
+  r = cli([old, '--apply', '--harness-root', h]);
+  check('after committing it, --apply works from master', r.code === 0 && fs.existsSync(oldSync) && /master/.test(r.out));
+  check('the worktree got the missing file', fs.existsSync(path.join(oldSync, '.claude/workflows/w.js')));
+  check('the repo itself was not touched', !fs.existsSync(path.join(old, '.claude/workflows/w.js')) && git(old, ['status', '--porcelain']) === '');
+  check('the worktree is on the sync branch', git(oldSync, ['branch', '--show-current']) === 'chore/harness-sync-v1.0.0');
+
+  // --- --base ---
+  const trunk = legacyRepo(p, 'trunk-repo', { '.claude/commands/a.md': 'a v1\n' }, 'trunk');
+  const trunkSync = path.join(p, 'trunk-repo-sync');
+  created.push([trunk, trunkSync]);
+  cli(['--adopt', trunk, '--harness-root', h]);
+  git(trunk, ['add', '.claude/.harness-version']);
+  git(trunk, ['commit', '-q', '--no-verify', '-m', 'adopt']);
+  r = cli([trunk, '--apply', '--harness-root', h]);
+  check('a branch that is neither main nor master is refused clearly', r.code === 1 && /product has no "main" branch \(and no "master"\)/.test(r.out) && /--base/.test(r.out));
+  check('and creates no worktree', !fs.existsSync(trunkSync));
+  r = cli([trunk, '--apply', '--base', 'nope', '--harness-root', h]);
+  check('--base with an unknown branch is refused', r.code === 1 && /no "nope" branch/.test(r.out));
+  r = cli([trunk, '--apply', '--base', '-x', '--harness-root', h]);
+  check('--base with a suspicious name is refused', r.code === 1 && /invalid --base/.test(r.out));
+  check('refused bases create no worktree', !fs.existsSync(trunkSync));
+  r = cli([trunk, '--apply', '--base', 'trunk', '--harness-root', h]);
+  check('--base trunk works and names the base', r.code === 0 && /\(base [0-9a-f]{7}, trunk\)/.test(r.out) && fs.existsSync(trunkSync));
+
+  // --- option combinations ---
+  for (const [name, args] of [
+    ['--adopt with --all', ['--adopt', '--all']],
+    ['--adopt with --apply', ['--adopt', old, '--apply']],
+    ['--adopt with --in-place', ['--adopt', old, '--in-place']],
+    ['--adopt with --base', ['--adopt', old, '--base', 'main']],
+    ['--base with --all', ['--all', '--base', 'main']],
+  ]) {
+    r = cli([...args, '--harness-root', h]);
+    check(`${name} is refused`, r.code === 1 && /cannot be combined/.test(r.out));
+  }
+  r = cli(['--adopt', '--harness-root', h]);
+  check('--adopt without a repo is a usage error', r.code === 1 && /usage/i.test(r.out));
+  r = cli(['--adopt', path.join(p, 'nope'), '--harness-root', h]);
+  check('--adopt of a missing directory is reported', r.code === 1 && /directory not found/.test(r.out));
+} finally {
+  for (const [repo, wt] of created) {
+    try { execFileSync('git', ['worktree', 'remove', '--force', wt], { cwd: repo, stdio: 'ignore' }); } catch (e) { /* not created */ }
+  }
+  rm(h);
+  rm(p);
+}
+done('adopt');
+```
+
+- [ ] **Step 2: Run to verify failure**
+
+Run: `node scripts/adopt.test.js`
+Expected: FAIL — `Cannot find module './lib/adopt'`.
+
+- [ ] **Step 3: Implement `adopt.js`**
+
+Create `scripts/lib/adopt.js`:
+
+```js
+// adopt.js — bring a product repo that was NOT created by new-product.js under the sync.
+// Writes only <dir>/.claude/.harness-version, recording the managed files that are
+// identical to the harness. Differing files are left unrecorded so the next sync
+// reports them as conflicts instead of overwriting them. Never commits.
+const fs = require('fs');
+const path = require('path');
+const { listManaged, readManifest, sha256 } = require('./fsutil');
+const { harnessState, gitOut } = require('./git');
+const { registerProduct } = require('./registry');
+
+function adoptProduct({ harnessRoot, productDir, name, register = true }) {
+  const dir = path.resolve(productDir);
+  if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) throw new Error(`directory not found: ${dir}`);
+  if (!fs.existsSync(path.join(dir, '.claude'))) throw new Error(`not a Claude Code project (no .claude/): ${dir}`);
+  const vf = path.join(dir, '.claude', '.harness-version');
+  if (fs.existsSync(vf)) throw new Error(`already adopted (.claude/.harness-version exists): ${dir}`);
+  if (gitOut(['rev-parse', '--is-inside-work-tree'], dir) !== 'true') throw new Error(`not a git repository: ${dir}`);
+  const version = readManifest(harnessRoot).harnessVersion;
+  if (!version) throw new Error('harness.manifest.json has no harnessVersion');
+
+  const files = {};
+  const identical = [];
+  const differs = [];
+  const missing = [];
+  for (const rel of listManaged(harnessRoot)) {
+    const p = path.join(dir, rel);
+    if (!fs.existsSync(p)) { missing.push(rel); continue; }
+    const mine = sha256(p);
+    if (mine === sha256(path.join(harnessRoot, rel))) { files[rel] = mine; identical.push(rel); } else differs.push(rel);
+  }
+
+  const state = harnessState(harnessRoot);
+  fs.writeFileSync(vf, JSON.stringify({
+    harnessVersion: version,
+    harnessCommit: state.commit,
+    harnessDirty: state.dirty,
+    syncedAt: new Date().toISOString(),
+    files,
+  }, null, 2) + '\n');
+  if (register) registerProduct(harnessRoot, { name: name || path.basename(dir), path: dir });
+  return { dir, version, identical, differs, missing };
+}
+
+module.exports = { adoptProduct };
+```
+
+- [ ] **Step 4: Change `createSyncWorktree` in `scripts/lib/sync.js`**
+
+Add directly above `function createSyncWorktree`:
+
+```js
+const BRANCH_RE = /^[A-Za-z0-9][A-Za-z0-9._\/-]*$/;
+
+// The branch the sync worktree is cut from: --base, else main, else master.
+function pickBase(productRoot, want) {
+  const sha = (b) => gitOut(['rev-parse', '--verify', '--quiet', `refs/heads/${b}`], productRoot);
+  if (want !== undefined) {
+    if (!BRANCH_RE.test(want)) throw new Error(`invalid --base "${want}"`);
+    const s = sha(want);
+    if (!s) throw new Error(`product has no "${want}" branch (given with --base)`);
+    return { name: want, sha: s };
+  }
+  for (const b of ['main', 'master']) {
+    const s = sha(b);
+    if (s) return { name: b, sha: s };
+  }
+  throw new Error('product has no "main" branch (and no "master"); the sync branch is cut from the base branch, so name it main or master, or pass --base <branch>');
+}
+```
+
+Change the signature line to `function createSyncWorktree(productRoot, version, baseBranch) {`, change the reuse return to `return { dir, branch, reused: true, base: null, baseName: null };`, and replace the block from the comment `// branch from main explicitly` through the final `return` with:
+
+```js
+  // branch from the base branch explicitly: the product may have an unmerged task branch checked out
+  const base = pickBase(productRoot, baseBranch);
+  try {
+    execFileSync('git', ['worktree', 'add', '-b', branch, dir, base.sha], { cwd: productRoot, stdio: 'pipe' });
+  } catch (e) {
+    throw new Error(`could not create worktree ${dir} on ${branch}: ${String(e.stderr || e.message).trim()}`);
+  }
+  return { dir, branch, reused: false, base: base.sha.slice(0, 7), baseName: base.name };
+```
+
+- [ ] **Step 5: Change the CLI `scripts/sync-harness.js`**
+
+Add `const { adoptProduct } = require('./lib/adopt');` below the other requires. Replace the two `usage` lines that print the usage with:
+
+```js
+  console.error('usage: sync-harness.js <product-dir> | --all [--apply] [--in-place] [--base <branch>]');
+  console.error('       sync-harness.js --adopt <product-dir>');
+  console.error('  --adopt records an older repo (not made by new-product.js) so it can be synced; it writes only .claude/.harness-version');
+  console.error('  --base picks the branch the sync worktree is cut from (default: main, else master); single repo only');
+  console.error('  --in-place is an emergency/testing exception: it writes into the product directory (single repo only)');
+```
+
+Change `syncOne`'s signature to `function syncOne(harnessRoot, name, dir, { apply, inPlace, base })`, the worktree line to `const wt = createSyncWorktree(dir, plan.versionTo, base);`, and the base message to:
+
+```js
+  console.log(`  applied in ${wt.dir} on branch ${wt.branch}${wt.base ? ` (base ${wt.base}, ${wt.baseName})` : ''}`);
+```
+
+In `main()`, change the `parseArgs` call to `{ values: ['--harness-root', '--base'], flags: ['--all', '--apply', '--in-place', '--adopt'] }`, change `options` to `{ apply: parsed.flags.has('--apply'), inPlace: parsed.flags.has('--in-place'), base: parsed.values['--base'] }`, and insert directly after the existing `if (target === '--all' && options.inPlace) { ... }` block:
+
+```js
+  if (parsed.flags.has('--adopt')) {
+    if (all || options.apply || options.inPlace || options.base !== undefined) {
+      console.error('sync failed: --adopt cannot be combined with --all, --apply, --in-place or --base');
+      process.exit(1);
+    }
+    try {
+      const r = adoptProduct({ harnessRoot, productDir: target });
+      console.log(`adopted ${r.dir} at harness ${r.version}`);
+      console.log(`  recorded ${r.identical.length} identical file(s); ${r.differs.length} differ (reported as conflicts, never overwritten); ${r.missing.length} missing (added by the next sync)`);
+      for (const f of r.differs) console.log(`  differs  ${f}`);
+      for (const f of r.missing) console.log(`  missing  ${f}`);
+      console.log('  wrote .claude/.harness-version; nothing was committed');
+      console.log('  next: commit it on the base branch, then do a dry run:');
+      console.log(`    git -C "${r.dir}" add .claude/.harness-version && git -C "${r.dir}" commit -m "chore: adopt harness sync"`);
+      console.log(`    node scripts/sync-harness.js "${r.dir}"`);
+      process.exit(0);
+    } catch (e) {
+      console.error(`sync failed: ${e.message}`);
+      process.exit(1);
+    }
+  }
+  if (target === '--all' && options.base !== undefined) {
+    console.error('sync failed: --base cannot be combined with --all');
+    process.exit(1);
+  }
+```
+
+(`--adopt` with no repo is already a usage error because `!all && !parsed.positional.length` runs earlier. Check that the `--adopt --all` case prints "cannot be combined": the block above runs before the registry is read, so it does.)
+
+- [ ] **Step 6: Run to verify success, wire into `npm test`, document**
+
+Run: `node scripts/adopt.test.js`
+Expected: `PASS (adopt)`. Then run the existing sync suite: `node scripts/sync-harness.test.js` — expected `PASS (sync-core)` (its "no main branch" test uses a branch named `trunk` and still matches the new message).
+Edit `package.json`: append ` && node scripts/adopt.test.js` to the `"test"` value. Run `npm test` — seven `PASS` lines once Task 5 is in (six before it).
+Append to `docs/bootstrap.md` a section titled `## Bringing an older repo under the sync`:
+
+```markdown
+## Bringing an older repo under the sync
+
+A repo made before `new-product.js` existed has no `.claude/.harness-version`, so sync
+refuses it. Record it once:
+
+    node scripts/sync-harness.js --adopt <repo>
+
+This writes only `.claude/.harness-version`, listing the managed files that are identical
+to the harness. Files that differ are reported as conflicts by later syncs and are never
+overwritten; files that are missing are added. It commits nothing: commit the new file on
+the base branch yourself, then run a dry run and `--apply` as usual. The sync worktree is
+cut from `main`, else `master`; for any other branch pass `--base <branch>`.
+```
+
+Add this bullet to the `## 1.1.0` entry of `CHANGELOG.md` (below the `check-harness` bullet): `- `sync-harness.js --adopt <repo>` brings a repo made before `new-product.js` under the sync, and `--base <branch>` (default main, else master) picks the branch the sync worktree is cut from.`
+
+- [ ] **Step 7: Commit**
+
+```bash
+rtk git add scripts/lib/adopt.js scripts/adopt.test.js scripts/lib/sync.js scripts/sync-harness.js package.json docs/bootstrap.md CHANGELOG.md
+rtk git commit -m "feat: add sync-harness --adopt and a configurable base branch" -m "Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 6: Real run, measurement and rollout (needs the user; do not run unattended; execute AFTER Task 7)
 
 **Files:** none in this repo except `CHANGELOG.md` (add the measured numbers). Creates a throw-away repo in the OS temp directory.
 
@@ -1560,6 +1893,8 @@ rtk git commit -m "feat: add flow-report to total token usage per workflow run" 
 - [ ] **Step 3: Fix what the smoke run found.** Any defect found in Step 1 is a new finding: write the failing simulator test first (`scripts/flow.test.js`), then fix `flow.js`, then re-run the smoke step that failed. Do not paper over a runtime difference by editing the test.
 
 - [ ] **Step 4 (ASK): roll out to `ridgo`.** Run `node scripts/sync-harness.js --all` (dry run). Expected for `ridgo`: `add .claude/workflows/flow.js` and a version change `1.0.0 -> 1.1.0`, no conflicts. Show the user the output and ask before `--apply`; `--apply` writes into `D:\internal_project\ridgo-sync` on branch `chore/harness-sync-v1.1.0` and commits nothing. `ridgo` must have `main` and a clean `.claude/` (its local `settings.local.json` is ignored by git).
+
+- [ ] **Step 4b (ASK): bring `D:\internal_project\string-art` under the sync and roll `/flow` out to it.** `string-art` is a private GitHub repo on branch `master` (remote `origin`, already pushed). Ask the user first, then: (1) `node scripts/sync-harness.js --adopt D:\internal_project\string-art` (expected: 10 identical files recorded, 0 differ, 1 missing = `product-brainstorm.js` is NOT managed for it? check: the manifest manages `.claude/workflows`, so `flow.js` and `product-brainstorm.js` both show as missing and will be ADDED; tell the user `product-brainstorm.js` is the Ridgo-specific workflow and ask whether to keep it out, in which case stop and decide how before applying); (2) with the user's approval, commit the new `.claude/.harness-version` in `string-art` on `master` (`git -C D:\internal_project\string-art add .claude/.harness-version` then `commit -m "chore: adopt harness sync"` with the Sonnet 5.5 trailer; it must not stage `img/`); (3) dry run `node scripts/sync-harness.js D:\internal_project\string-art`, show it; (4) after approval `--apply` (writes `D:\internal_project\string-art-sync` on branch `chore/harness-sync-v1.1.0`, commits nothing); (5) the user reviews, commits, pushes and merges that branch themselves.
 
 - [ ] **Step 5 (ASK): push.** Ask before pushing `feat/flow-workflow`. `claude-harness` is public; confirm nothing private is in the diff (`git diff origin/main..HEAD --stat`).
 
