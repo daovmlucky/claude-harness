@@ -23,6 +23,11 @@ function rm(dir) { fs.rmSync(dir, { recursive: true, force: true }); }
 // A minimal stand-in for claude-harness: a versioned manifest, a few managed
 // files, a personal settings file that must never be copied, a product
 // template and a changelog.
+const GITATTR = [
+  "# Workflow scripts must stay LF: Claude Code's Workflow tool rejects carriage returns",
+  '.claude/workflows/*.js text eol=lf',
+  '',
+].join('\n');
 function makeFakeHarness(root) {
   write(path.join(root, 'harness.manifest.json'), JSON.stringify({
     harnessVersion: '1.0.0',
@@ -36,6 +41,7 @@ function makeFakeHarness(root) {
   write(path.join(root, '.claude/settings.local.json'), '{"personal":true}');
   write(path.join(root, 'product-template/CLAUDE.md.tmpl'), '# {{NAME}}\n');
   write(path.join(root, 'product-template/gitignore.tmpl'), 'node_modules/\n');
+  write(path.join(root, 'product-template/gitattributes.tmpl'), GITATTR);
   write(path.join(root, 'product-template/docs/gates.json'), '{"G0":null}\n');
   write(path.join(root, 'product-template/.claude/settings.json'),
     '{"permissions":{"deny":["Bash(gh pr merge *)","Bash(git push -f *)"]}}\n');

@@ -28,6 +28,7 @@ check('copies managed command', rd('.claude/commands/a.md') === 'a v1\n');
 check('copies managed workflow', rd('.claude/workflows/w.js') === 'w v1\n');
 check('renders {{NAME}} in CLAUDE.md', rd('CLAUDE.md') === '# ridgo\n');
 check('gitignore.tmpl becomes .gitignore', rd('.gitignore') === 'node_modules/\n');
+check('gitattributes.tmpl becomes .gitattributes with the LF rule', /^\.claude\/workflows\/\*\.js text eol=lf$/m.test(rd('.gitattributes')) && !has('gitattributes.tmpl'));
 check('copies docs skeleton', has('docs/gates.json'));
 check('creates docs dirs with .gitkeep', has('docs/adr/.gitkeep') && has('docs/ux/.gitkeep') && has('docs/brainstorm/.gitkeep'));
 check('copies product settings with deny rule', /gh pr merge/.test(rd('.claude/settings.json')));
@@ -93,6 +94,7 @@ rm(h6);
 // --- real harness smoke test (register:false keeps the real registry clean) ---
 const smoke = createProduct({ harnessRoot: REPO, name: 'smoke', parentDir: parent, register: false });
 const sx = (rel) => fs.existsSync(path.join(smoke.target, rel));
+check('real: .gitattributes keeps workflows at LF', /eol=lf/.test(fs.readFileSync(path.join(smoke.target, '.gitattributes'), 'utf8')));
 check('real: pipeline command copied', sx('.claude/commands/explore.md'));
 check('real: reviewer agent copied', sx('.claude/agents/reviewer.md'));
 check('real: personal settings not copied', !sx('.claude/settings.local.json'));
