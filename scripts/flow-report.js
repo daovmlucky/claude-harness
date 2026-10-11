@@ -40,7 +40,7 @@ function main() {
       const file = path.join(repo, 'docs', 'flow-cost.md');
       fs.mkdirSync(path.dirname(file), { recursive: true });
       if (!fs.existsSync(file)) fs.writeFileSync(file, '# Flow cost log\n\nTokens per workflow run, from scripts/flow-report.js.\n');
-      fs.appendFileSync(file, `\n## ${new Date().toISOString().slice(0, 10)} ${pick.runId}\n\n\`\`\`\n${text}\n\`\`\`\n`);
+      fs.appendFileSync(file, `\n## ${new Date().toISOString().slice(0, 10)} ${rep.ascii(pick.runId)}\n\n\`\`\`\n${text}\n\`\`\`\n`);
       console.log(`appended to ${file}`);
     }
   } catch (e) {

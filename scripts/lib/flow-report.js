@@ -83,18 +83,34 @@ function summarize(agents) {
   return { total, byPhase };
 }
 
-const num = (n) => String(n).padStart(10);
+// Console and docs output is ASCII only: accents are stripped, control characters
+// (newlines, tabs) become a space, anything else non-ASCII becomes "?".
+const ascii = (s) => String(s)
+  .normalize('NFD').replace(/[̀-ͯ]/g, '')
+  .replace(/[\x00-\x1f\x7f]+/g, ' ')
+  .replace(/[^\x20-\x7e]/g, '?');
+
+const NAME_W = 44;
+const NUM_W = 11;
+const num = (n) => String(n).padStart(NUM_W);
 function row(name, t) {
-  return `${name.slice(0, 30).padEnd(31)}${String(t.calls).padStart(6)}${num(t.input)}${num(t.output)}${num(t.cacheRead)}${num(t.cacheCreation)}`;
+  return `${name.padEnd(NAME_W)}${String(t.calls).padStart(6)}${num(t.input)}${num(t.output)}${num(t.cacheRead)}${num(t.cacheCreation)}`;
+}
+
+// The phase tag is kept whole; only the label is cut to make room for it.
+function agentName(a) {
+  const tag = ` [${ascii(a.phase)}]`;
+  const lab = ascii(a.label).slice(0, Math.max(8, NAME_W - tag.length));
+  return lab + tag;
 }
 
 function formatReport(run) {
   const { total, byPhase } = summarize(run.agents);
-  const head = `${'agent'.padEnd(31)}${'calls'.padStart(6)}${'input'.padStart(10)}${'output'.padStart(10)}${'cache_read'.padStart(10)}${'cache_new'.padStart(10)}`;
-  const lines = [`Run ${run.runId}`, head, ...run.agents.map((a) => row(`${a.label} [${a.phase}]`, a)), '-- by phase', ...Object.entries(byPhase).map(([p, t]) => row(p, t)), row('TOTAL', total)];
+  const head = `${'agent'.padEnd(NAME_W)}${'calls'.padStart(6)}${'input'.padStart(NUM_W)}${'output'.padStart(NUM_W)}${'cache_read'.padStart(NUM_W)}${'cache_new'.padStart(NUM_W)}`;
+  const lines = [`Run ${ascii(run.runId)}`, head, ...run.agents.map((a) => row(agentName(a), a)), '-- by phase', ...Object.entries(byPhase).map(([p, t]) => row(ascii(p), t)), row('TOTAL', total)];
   if (run.badLines) lines.push(`(${run.badLines} unreadable line(s) skipped)`);
   lines.push('Tokens only; cache_read and cache_new (cache creation) are priced differently from input and output.');
   return lines.join('\n');
 }
 
-module.exports = { projectDirName, findProjectDir, listRuns, readRun, summarize, formatReport };
+module.exports = { projectDirName, findProjectDir, listRuns, readRun, summarize, formatReport, ascii };

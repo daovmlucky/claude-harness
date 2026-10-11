@@ -92,5 +92,36 @@ c = cli(['--project', repo, '--projects-dir', projects, '--append']);
 const logText = fs.readFileSync(logFile, 'utf8');
 check('a second --append adds another entry', (logText.match(/^## /gm) || []).length === 2 && /^# Flow cost log/.test(logText));
 
+// Fix round 1: long, non-ASCII and multi-line labels (real ridgo labels are long Vietnamese text).
+const longLabel = 'Ridgo v2 (ý tưởng chi tiết của founder) · market';
+const longProjects = path.join(root, 'projects-long');
+const longRepo = path.join(root, 'Long Repo');
+fs.mkdirSync(longRepo);
+const longRun = path.join(longProjects, rep.projectDirName(longRepo).toLowerCase(), 'session-2', 'subagents', 'workflows', 'wf_bbb222');
+write(path.join(longRun, 'agent-b1.meta.json'), JSON.stringify({ description: longLabel, workflowPhase: 'Research (fan-out)' }));
+write(path.join(longRun, 'agent-b1.jsonl'), line('n1', usage(1, 2, 3, 4)) + '\n');
+// b2 differs from b1 only after character 40 of the label (the visible part is shorter than that)
+write(path.join(longRun, 'agent-b2.meta.json'), JSON.stringify({ description: longLabel + ' beta', workflowPhase: 'Save' }));
+write(path.join(longRun, 'agent-b2.jsonl'), line('n2', usage(1, 2, 3, 4)) + '\n');
+write(path.join(longRun, 'agent-b3.meta.json'), JSON.stringify({ description: 'line one\n\tline two', workflowPhase: 'Save' }));
+write(path.join(longRun, 'agent-b3.jsonl'), line('n3', usage(1, 2, 3, 4)) + '\n');
+
+const longRuns = rep.readRun(longRun);
+const longText = rep.formatReport(longRuns);
+const ln = longText.split('\n');
+check('(a) a long non-ASCII label gives an ASCII-only report', /^[\x20-\x7e\n]*$/.test(longText));
+check('(a) the phase tag survives a long label', ln.some((l) => /\[Research \(fan-out\)\]\s+\d/.test(l)));
+// Limit: the visible part of a label is short, so two labels that differ only after
+// character 40 look alike; the phase tag is what keeps their rows apart.
+check('(b) each agent row keeps its own phase tag', ln.filter((l) => / \[Save\]\s+\d/.test(l)).length === 2 && ln.filter((l) => /\[Research \(fan-out\)\]\s+\d/.test(l)).length === 1);
+const expectLines = 2 + longRuns.agents.length + 1 + Object.keys(rep.summarize(longRuns.agents).byPhase).length + 1 + 1;
+check('(c) a label with a newline and a tab adds no table lines', ln.length === expectLines);
+check('(c) control characters in a label become spaces', longText.includes('line one line two'));
+check('(d) the header separates output and cache_read', /output\s+cache_read/.test(longText));
+
+c = cli(['--project', longRepo, '--projects-dir', longProjects, '--append']);
+const longLog = fs.readFileSync(path.join(longRepo, 'docs', 'flow-cost.md'), 'utf8');
+check('(e) --append writes ASCII only and the label text', c.code === 0 && /^[\x20-\x7e\n]*$/.test(longLog) && longLog.includes('line one line two') && /^[\x20-\x7e\n]*$/.test(c.out));
+
 rm(root);
 done('flow-report');
