@@ -16,7 +16,7 @@ Plugin và bước tự định nghĩa; giao diện chỉnh pipeline; chạy cá
 - Script không nạp được mã ngoài (`import()` làm workflow lỗi) và không tự đọc/ghi file hay chạy shell: **chỉ agent** làm được.
 - Workflow **không nhận input giữa chừng** → mỗi cổng là điểm dừng giữa hai lần chạy.
 - Trong script `Date.now()`, `Math.random()` và `new Date()` không tham số bị chặn; `meta` phải là object literal ở đầu file.
-- `agent()` có `label`, `phase`, `schema`, `model`, `isolation`. Chưa thấy tùy chọn chọn loại subagent, nên review độc lập dựa vào **agent mới với ngữ cảnh sạch** đọc `.claude/agents/reviewer.md`, không dựa vào định nghĩa subagent.
+- `agent()` có `label`, `phase`, `schema`, `model`, `isolation`. Tài liệu `workflow-authoring` xác nhận `agent()` còn có `agentType` (chọn loại subagent từ cùng danh sách với công cụ Agent) và `effort` (`low`…`max`). Vì vậy agent review dùng `agentType: 'reviewer'`, tức đúng định nghĩa `.claude/agents/reviewer.md` của harness, và việc chọn mức tiết kiệm dùng `effort` (không đoán tên model).
 - Điều chưa kiểm chứng trên máy này: hành vi `schema` khi agent trả sai định dạng ngoài quy định thử lại của runtime; chi phí token thực tế.
 
 ## 4. Thiết kế
@@ -41,21 +41,24 @@ Không có `/flow reset`: muốn bỏ việc dở thì sửa tay `docs/flow-stat
 ### 4.3 Trạng thái **[D]**
 `docs/flow-state.json` do workflow ghi, người dùng chỉ sửa tay khi cần thoát việc dở:
 ```json
-{ "flowSchema": 1, "task": "…", "completed": ["explore","requirements"], "approved": { "requirements": true }, "failure": null }
+{ "flowSchema": 1, "task": "…", "completed": ["explore","requirements"], "approved": ["requirements"], "failure": "" }
 ```
 Dùng file riêng, **không dùng** `docs/gates.json`: mẫu sản phẩm của đường G0–G3 đã định nghĩa file đó với hình dạng khác (G0, G1, G2, G3a, G3b), nên dùng chung sẽ xung đột. `flowSchema` có từ đầu vì hình dạng file này là hợp đồng; đổi nó về sau là thay đổi **major**.
 
 ### 4.4 Luồng chạy (3 pha)
-1. **Load** (1 agent, `schema`): đọc `docs/flow-state.json` và `docs/flow.config.json` (nếu có), kiểm tra hợp lệ, trả `{ task, completed, approved, gates, next, blocked }`. Nhánh `status` và `approve` kết thúc ở đây (approve có thêm 1 agent ghi file). Nếu trạng thái hỏng hoặc không hợp lệ: dừng và nói rõ.
+1. **Load** (1 agent, `schema`, `effort: 'low'`): đọc `docs/flow-state.json` và `docs/flow.config.json` (nếu có) và trả về nguyên văn `{ stateText, configText }`; script tự phân tích và kiểm tra hợp lệ (mục 4.4a). Nhánh `status` và `approve` kết thúc ở đây (approve có thêm 1 agent Save). Nếu trạng thái hoặc cấu hình hỏng, hoặc `extraGates` chứa khóa lạ hay id sai: dừng và nói rõ, không bỏ qua lặng lẽ.
 2. **Steps**: với mỗi bước từ `next` trở đi, 1 agent (trừ `fix-loop`, xem 4.5). Prompt của agent do script ghép từ: tên bước, việc cần làm (`$ARGUMENTS`), và chỉ thị "đọc `.claude/commands/<bước>.md` và làm đúng như nó mô tả; **bỏ qua** mọi dòng yêu cầu dừng hỏi người dùng, vì workflow tự xử lý cổng; không push, không mở PR; nếu mục của bước đã có trong `docs/run-log.md` thì thay thế, không thêm trùng". Agent trả `{ status: done|failed, summary, artifacts: [đường dẫn file đã ghi] }`. Sau mỗi bước xong, nếu bước đó là cổng thì dừng; nếu `failed` thì dừng. Các bước bắt buộc để lại file: `requirements` → `docs/spec.md`, `breakdown` → `docs/plan.md`; agent Persist kiểm tra file tồn tại, và nếu thiếu thì ghi `failure` thay vì ghi bước đó vào `completed`.
 3. **Persist** (1 agent, tại mỗi điểm dừng: cổng, lỗi, hoặc hết): ghi `completed`, `failure` vào `docs/flow-state.json`. Một lần chạy bị ngắt giữa chừng sẽ làm lại từ điểm dừng gần nhất; vì các bước thay thế mục cũ nên chạy lại là an toàn.
+
+### 4.4a Quyền sở hữu ghi file
+Script không ghi được file; mọi thay đổi trạng thái do agent **Save** thực hiện từ nội dung script đã tính sẵn (JSON trạng thái đặt giữa `<<<STATE` và `STATE>>>`, bản ghi fix-loop giữa `<<<REPORT` và `REPORT>>>`), nên logic trạng thái nằm trong script và kiểm thử được. Agent đọc trạng thái trả về **nguyên văn** hai file (`stateText`, `configText`); script tự phân tích và kiểm tra hợp lệ (không để agent diễn giải).
 
 ### 4.5 `fix-loop` do script điều khiển **[U]**
 Tối đa 5 vòng, mỗi vòng: **Test** (agent tự phát hiện lệnh test, trả `{ passed, command, summary }`) song song với **Review** (agent mới đọc `.claude/agents/reviewer.md` và chấm theo `docs/spec.md`, trả `{ verdict: PASS|BLOCK, blockers[] }`); **Ghi** kết quả vào `docs/run-log.md`; nếu test đạt **và** verdict `PASS` thì xanh; nếu không, một agent **Fix** sửa đúng các lỗi test và `[BLOCKER]`, rồi sang vòng sau. Dừng sớm và chuyển lên người dùng khi cùng một tập blocker lặp lại hai vòng liên tiếp (không tạo ra tiến triển), hoặc khi hết 5 vòng. Không bao giờ báo xanh nếu thiếu một trong hai điều kiện. Agent viết mã và agent review khác nhau, nên review độc lập.
 
 ### 4.6a Tiết kiệm chi phí **[U]**
-- **Model theo bước**, khai báo thành một bảng nhỏ ở đầu `flow.js` (dễ chỉnh): mạnh cho `design`, `blueprint` và agent **review**; tầm trung cho `implement` và agent **fix**; rẻ cho agent ghi trạng thái và agent chạy test. Tên model hợp lệ cho tùy chọn `model` của `agent()` phải được kiểm chứng khi viết mã; nếu một giá trị bị từ chối thì lui về model của phiên và ghi cảnh báo, không làm hỏng lần chạy.
-- **Gộp Load vào bước đầu khi chạy tiếp:** pha Load chỉ là agent riêng cho `status` và `approve`; khi `/flow` chạy bình thường, bước đầu tiên tự đọc trạng thái (một agent ít hơn mỗi lần chạy).
+- **Mức nỗ lực (`effort`) theo bước**, khai báo thành một bảng nhỏ `TIERS` ở đầu `flow.js` (dễ chỉnh): `effort: 'low'` cho agent đọc trạng thái, agent chạy test và agent ghi trạng thái; các bước còn lại và agent review/fix kế thừa mức của phiên. Tùy chọn `model` có trong bảng nhưng **để trống** (tài liệu khuyên bỏ trống khi không chắc, và tên model hợp lệ chưa được kiểm chứng); người dùng tự điền nếu muốn.
+- **Không gộp Load vào bước đầu** (đổi so với đề xuất ban đầu): script phải biết bước kế tiếp trước khi chọn lời nhắc, nên cần đọc trạng thái trước. Thay vào đó agent đọc trạng thái chạy ở `effort: 'low'`, và `status`/`approve` dùng lại chính nó.
 - **Nhãn agent ngắn và ổn định** (`explore`, `fix-loop#2:review`...) để báo cáo ở mục 4.7 gắn đúng token vào đúng bước.
 
 ### 4.7 Báo cáo chi phí **[U]**
@@ -82,7 +85,8 @@ Thêm mới, tương thích ngược (không đổi file trạng thái hay lện
 - **Sửa tay trạng thái** có thể làm `/flow` đi sai bước; Load kiểm tra thứ tự nhưng không chứng minh bước đã thật sự xong ngoài việc kiểm tra file đầu ra.
 
 ## 7a. Số đo cơ sở đã có
-Một lần chạy `product-brainstorm` (9 agent) trong `ridgo`, đọc từ chính bản ghi nói trên: tổng cộng khoảng 57.500 token `output`, 232 token `input` mới, 4,1 triệu token `cache_read` và 1,06 triệu token `cache_creation`. Mỗi agent, kể cả agent kiểm chứng chỉ đọc kết quả có sẵn, đã tốn **50.000 đến 250.000 token `cache_creation`**, trong khi `output` chỉ 3.000 đến 14.000. Gợi ý (chưa kết luận, mới một lần đo): chi phí **cố định mỗi agent** (phần mở đầu ngữ cảnh) lớn hơn nhiều so với phần agent tự viết ra, nên **giảm số agent** hiệu quả hơn giảm độ dài từng agent.
+Một lần chạy `product-brainstorm` (9 agent) trong `ridgo`, đọc từ chính bản ghi nói trên: 34 lượt gọi API, khoảng 55.800 token `output`, 68 token `input` mới, 1,18 triệu token `cache_read` và 385.000 token `cache_creation`. Mỗi agent, kể cả agent kiểm chứng chỉ đọc kết quả có sẵn, tốn **26.000 đến 69.000 token `cache_creation`** cho phần mở đầu ngữ cảnh, trong khi `output` chỉ 3.000 đến 14.000. Gợi ý (chưa kết luận, mới một lần đo): chi phí **cố định mỗi agent** lớn hơn phần agent tự viết ra, nên **giảm số agent** hiệu quả hơn rút ngắn từng agent.
+**Lưu ý đo đạc:** mỗi lượt gọi API được ghi nhiều dòng trong bản ghi (quan sát: 20 dòng cho 5 lượt gọi), nên báo cáo phải **loại trùng theo `message.id`** (lấy dòng cuối của mỗi `id`); cộng mọi dòng sẽ phóng đại token khoảng ba đến bốn lần. Một lần đo ban đầu quên điều này.
 
 ## 8. Quyết định
 1. **[U]** Một workflow `/flow`, dừng ở cổng kế tiếp; không chia ba workflow.
