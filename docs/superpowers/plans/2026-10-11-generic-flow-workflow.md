@@ -1548,11 +1548,13 @@ rtk git commit -m "feat: add flow-report to total token usage per workflow run" 
 **Why:** repos created before `new-product.js` existed (such as `D:\internal_project\string-art`) have no `.claude/.harness-version`, so sync refuses them; and `string-art` uses `master`, while sync only cut its worktree from `main`.
 
 **Files:**
-- Create: `scripts/lib/adopt.js`, `scripts/adopt.test.js`
+- Create: `scripts/lib/adopt.js`, `scripts/lib/skip.js`, `scripts/adopt.test.js`
 - Modify: `scripts/lib/sync.js` (`createSyncWorktree` + new `pickBase`), `scripts/sync-harness.js`, `package.json`, `docs/bootstrap.md`, `CHANGELOG.md`
 
 **Interfaces:**
-- Produces (`adopt.js`): `adoptProduct({ harnessRoot, productDir, name?, register? = true }) -> { dir, version, identical, differs, missing }` (arrays of relative posix paths). It writes ONLY `<dir>/.claude/.harness-version`, recording `harnessVersion` (the current harness version), `harnessCommit`, `harnessDirty`, `syncedAt` and `files` = hashes of the managed files that are **identical** to the harness. Files that differ or are missing are not recorded, so the next sync reports them as `conflict` (never overwritten) or `add`. It never commits and never touches any other file. Throws: `directory not found`, `not a Claude Code project (no .claude/)`, `already adopted`, `not a git repository`, `harness.manifest.json has no harnessVersion`.
+- Produces (`adopt.js`): `adoptProduct({ harnessRoot, productDir, name?, register? = true }) -> { dir, version, identical, differs, missing, skipped }` (arrays of relative posix paths). It writes ONLY `<dir>/.claude/.harness-version`, recording `harnessVersion` (the current harness version), `harnessCommit`, `harnessDirty`, `syncedAt` and `files` = hashes of the managed files that are **identical** to the harness. Files that differ or are missing are not recorded, so the next sync reports them as `conflict` (never overwritten) or `add`. It never commits and never touches any other file. Throws: `directory not found`, `not a Claude Code project (no .claude/)`, `already adopted`, `not a git repository`, `harness.manifest.json has no harnessVersion`.
+- Produces (`skip.js`): `readSkip(productRoot) -> string[]` reads the product's own `.claude/harness.skip.json` (`{ "skip": ["<managed path>", ...] }`) and returns the listed paths; no file means `[]`. A repo uses it to opt out of managed files that are not generic for it (for example the Ridgo-specific `.claude/workflows/product-brainstorm.js` in `string-art`). Errors: `.claude/harness.skip.json is not valid JSON`; `... must be an object with only a "skip" list`; `... "skip" must list relative paths with forward slashes`. The file belongs to the product: sync never writes it.
+- `planSync` ignores skipped paths completely (never added, never updated, never conflicted, and never REMOVED even if an old version file recorded them) and returns two extra fields `skipped` (skip entries that are managed files) and `skipUnknown` (skip entries the harness does not manage, probably typos); `formatPlan` prints them (`skipped  <path>` and `WARN     skip entry <path> is not a managed file (typo?)`). `adoptProduct` also honours the list: skipped files are neither recorded nor reported as missing, and it returns `skipped`.
 - Produces (`sync.js`): `createSyncWorktree(productRoot, version, baseBranch?) -> { dir, branch, reused, base, baseName }`. With no `baseBranch` it uses `main`, else `master`; the worktree is cut from the resolved commit SHA (not the branch name, which also avoids the "ambiguous name when a tag has the same name" failure). Errors: `product has no "main" branch (and no "master"); ...` (the existing test regex `/product has no "main" branch/` still matches), `product has no "<name>" branch (given with --base)`, `invalid --base "<name>"`.
 - CLI: `node scripts/sync-harness.js --adopt <repo>`; `node scripts/sync-harness.js <repo> --apply --base <branch>`. `--adopt` cannot be combined with `--all`, `--apply`, `--in-place` or `--base`; `--base` cannot be combined with `--all`.
 
@@ -1675,6 +1677,52 @@ try {
   r = cli([trunk, '--apply', '--base', 'trunk', '--harness-root', h]);
   check('--base trunk works and names the base', r.code === 0 && /\(base [0-9a-f]{7}, trunk\)/.test(r.out) && fs.existsSync(trunkSync));
 
+  // --- a repo opts out of a managed file with .claude/harness.skip.json ---
+  const skipRepo = legacyRepo(p, 'skip-repo', {
+    '.claude/commands/a.md': 'a v1\n',
+    '.claude/harness.skip.json': '{"skip":[".claude/workflows/w.js",".claude/workflows/typo.js"]}',
+  });
+  const sres = adoptProduct({ harnessRoot: h, productDir: skipRepo, register: false });
+  check('adopt reports the skipped file, not as missing', sres.skipped.join() === '.claude/workflows/w.js' && sres.missing.length === 0);
+  const sv = JSON.parse(fs.readFileSync(path.join(skipRepo, '.claude', '.harness-version'), 'utf8'));
+  check('a skipped file is not recorded', JSON.stringify(Object.keys(sv.files)) === '[".claude/commands/a.md"]');
+  const splan = planSync(h, skipRepo);
+  check('a skipped file is never added', splan.add.length === 0 && !hasChanges(splan));
+  check('the plan lists what was skipped', splan.skipped.join() === '.claude/workflows/w.js');
+  check('a skip entry the harness does not manage is reported as a probable typo', splan.skipUnknown.join() === '.claude/workflows/typo.js');
+  const { formatPlan } = require('./lib/sync');
+  check('formatPlan prints the skipped file and the typo warning', /skipped\s+\.claude\/workflows\/w\.js/.test(formatPlan('x', splan)) && /WARN\s+skip entry \.claude\/workflows\/typo\.js/.test(formatPlan('x', splan)));
+
+  // a file that was already recorded and present, then opted out of: no update, no conflict, no removal
+  const optOut = legacyRepo(p, 'optout-repo', { '.claude/commands/a.md': 'a v1\n', '.claude/workflows/w.js': 'w v1\n' });
+  adoptProduct({ harnessRoot: h, productDir: optOut, register: false });
+  write(path.join(optOut, '.claude', 'harness.skip.json'), '{"skip":[".claude/workflows/w.js"]}');
+  write(path.join(h, '.claude/workflows/w.js'), 'w v2\n'); // the harness changes the skipped file
+  const oplan = planSync(h, optOut);
+  check('an opted-out file is not updated and not a conflict', oplan.update.length === 0 && oplan.conflict.length === 0);
+  check('and it is not removed', oplan.remove.length === 0);
+  write(path.join(h, '.claude/workflows/w.js'), 'w v1\n'); // restore the shared fixture
+
+  // an opt-out file removed from the harness manifest later must not delete the repo's copy
+  const keep = legacyRepo(p, 'keep-repo', { '.claude/commands/a.md': 'a v1\n', '.claude/workflows/w.js': 'w v1\n' });
+  adoptProduct({ harnessRoot: h, productDir: keep, register: false });
+  write(path.join(keep, '.claude', 'harness.skip.json'), '{"skip":[".claude/workflows/gone.js"]}');
+  check('a skip entry for a path the repo does not have changes nothing else', planSync(h, keep).conflict.length === 0);
+
+  // bad skip files fail loudly, never silently ignore
+  for (const [name, text, re] of [
+    ['invalid JSON', '{nope', /not valid JSON/],
+    ['an extra key', '{"skip":[],"also":1}', /only a "skip" list/],
+    ['skip not a list', '{"skip":".claude/workflows/w.js"}', /must list relative paths/],
+    ['a backslash path', '{"skip":[".claude\\\\workflows\\\\w.js"]}', /must list relative paths/],
+    ['a .. path', '{"skip":["../x"]}', /must list relative paths/],
+  ]) {
+    write(path.join(keep, '.claude', 'harness.skip.json'), text);
+    check(`a bad skip file is refused by planSync: ${name}`, re.test(throws(() => planSync(h, keep))));
+  }
+  const badAdopt = legacyRepo(p, 'badskip-repo', { '.claude/commands/a.md': 'a v1\n', '.claude/harness.skip.json': '{nope' });
+  check('a bad skip file is refused by adopt, and nothing is written', /not valid JSON/.test(throws(() => adoptProduct({ harnessRoot: h, productDir: badAdopt, register: false }))) && !fs.existsSync(path.join(badAdopt, '.claude', '.harness-version')));
+
   // --- option combinations ---
   for (const [name, args] of [
     ['--adopt with --all', ['--adopt', '--all']],
@@ -1719,6 +1767,7 @@ const path = require('path');
 const { listManaged, readManifest, sha256 } = require('./fsutil');
 const { harnessState, gitOut } = require('./git');
 const { registerProduct } = require('./registry');
+const { readSkip } = require('./skip');
 
 function adoptProduct({ harnessRoot, productDir, name, register = true }) {
   const dir = path.resolve(productDir);
@@ -1730,11 +1779,14 @@ function adoptProduct({ harnessRoot, productDir, name, register = true }) {
   const version = readManifest(harnessRoot).harnessVersion;
   if (!version) throw new Error('harness.manifest.json has no harnessVersion');
 
+  const skip = new Set(readSkip(dir));
   const files = {};
   const identical = [];
   const differs = [];
   const missing = [];
+  const skipped = [];
   for (const rel of listManaged(harnessRoot)) {
+    if (skip.has(rel)) { skipped.push(rel); continue; }
     const p = path.join(dir, rel);
     if (!fs.existsSync(p)) { missing.push(rel); continue; }
     const mine = sha256(p);
@@ -1750,7 +1802,7 @@ function adoptProduct({ harnessRoot, productDir, name, register = true }) {
     files,
   }, null, 2) + '\n');
   if (register) registerProduct(harnessRoot, { name: name || path.basename(dir), path: dir });
-  return { dir, version, identical, differs, missing };
+  return { dir, version, identical, differs, missing, skipped };
 }
 
 module.exports = { adoptProduct };
@@ -1793,6 +1845,69 @@ Change the signature line to `function createSyncWorktree(productRoot, version, 
   return { dir, branch, reused: false, base: base.sha.slice(0, 7), baseName: base.name };
 ```
 
+- [ ] **Step 4b: Add the per-repo skip list**
+
+Create `scripts/lib/skip.js`:
+
+```js
+// skip.js — a product can opt out of managed files with .claude/harness.skip.json:
+//   { "skip": ["<managed path>", ...] }
+// The file belongs to the product; sync never writes it.
+const fs = require('fs');
+const path = require('path');
+
+function readSkip(productRoot) {
+  const f = path.join(productRoot, '.claude', 'harness.skip.json');
+  if (!fs.existsSync(f)) return [];
+  let o;
+  try { o = JSON.parse(fs.readFileSync(f, 'utf8')); } catch (e) { throw new Error('.claude/harness.skip.json is not valid JSON'); }
+  if (!o || typeof o !== 'object' || Array.isArray(o) || Object.keys(o).some((k) => k !== 'skip')) {
+    throw new Error('.claude/harness.skip.json must be an object with only a "skip" list');
+  }
+  const okPath = (x) => typeof x === 'string' && x !== '' && !x.includes('\\') && !path.isAbsolute(x) && !x.split('/').includes('..');
+  if (!Array.isArray(o.skip) || !o.skip.every(okPath)) {
+    throw new Error('.claude/harness.skip.json: "skip" must list relative paths with forward slashes');
+  }
+  return o.skip;
+}
+
+module.exports = { readSkip };
+```
+
+In `scripts/lib/sync.js` add `const { readSkip } = require('./skip');` below the other requires, add `'.claude/harness.skip.json'` to the `PROTECTED` array, and in `planSync` replace the three lines
+
+```js
+  const wanted = listManaged(harnessRoot);
+  const plan = {
+    add: [], update: [], remove: [], conflict: [], kept: [], current: [], refresh: [],
+    versionFrom, versionTo, settingsMissing: [],
+  };
+```
+
+with
+
+```js
+  const skipList = readSkip(productRoot);
+  const skip = new Set(skipList);
+  const allManaged = listManaged(harnessRoot);
+  const wanted = allManaged.filter((r) => !skip.has(r));
+  const plan = {
+    add: [], update: [], remove: [], conflict: [], kept: [], current: [], refresh: [],
+    versionFrom, versionTo, settingsMissing: [],
+    skipped: allManaged.filter((r) => skip.has(r)),
+    skipUnknown: skipList.filter((r) => !allManaged.includes(r)),
+  };
+```
+
+and in the removal loop change `if (wanted.includes(rel)) continue;` to `if (wanted.includes(rel) || skip.has(rel)) continue;`. In `formatPlan` add, directly above the `for (const c of newCommands(plan))` line:
+
+```js
+  for (const f of plan.skipped) lines.push(`  skipped  ${f}  (this repo opts out in .claude/harness.skip.json)`);
+  for (const f of plan.skipUnknown) lines.push(`  WARN     skip entry ${f} is not a managed file (typo?)`);
+```
+
+Run `node scripts/adopt.test.js` and `node scripts/sync-harness.test.js`; both must pass (the existing sync tests have no skip file, so they are unaffected).
+
 - [ ] **Step 5: Change the CLI `scripts/sync-harness.js`**
 
 Add `const { adoptProduct } = require('./lib/adopt');` below the other requires. Replace the two `usage` lines that print the usage with:
@@ -1822,7 +1937,7 @@ In `main()`, change the `parseArgs` call to `{ values: ['--harness-root', '--bas
     try {
       const r = adoptProduct({ harnessRoot, productDir: target });
       console.log(`adopted ${r.dir} at harness ${r.version}`);
-      console.log(`  recorded ${r.identical.length} identical file(s); ${r.differs.length} differ (reported as conflicts, never overwritten); ${r.missing.length} missing (added by the next sync)`);
+      console.log(`  recorded ${r.identical.length} identical file(s); ${r.differs.length} differ (reported as conflicts, never overwritten); ${r.missing.length} missing (added by the next sync); ${r.skipped.length} skipped by .claude/harness.skip.json`);
       for (const f of r.differs) console.log(`  differs  ${f}`);
       for (const f of r.missing) console.log(`  missing  ${f}`);
       console.log('  wrote .claude/.harness-version; nothing was committed');
@@ -1859,18 +1974,29 @@ refuses it. Record it once:
     node scripts/sync-harness.js --adopt <repo>
 
 This writes only `.claude/.harness-version`, listing the managed files that are identical
-to the harness. Files that differ are reported as conflicts by later syncs and are never
+to the harness (files the repo lists in `.claude/harness.skip.json` are ignored). Files that differ are reported as conflicts by later syncs and are never
 overwritten; files that are missing are added. It commits nothing: commit the new file on
 the base branch yourself, then run a dry run and `--apply` as usual. The sync worktree is
 cut from `main`, else `master`; for any other branch pass `--base <branch>`.
+
+### Opting out of a file
+
+To keep a repo from receiving a managed file that is not generic for it, list the file in
+the repo's own `.claude/harness.skip.json`:
+
+    { "skip": [".claude/workflows/product-brainstorm.js"] }
+
+Sync and `--adopt` then ignore those paths: they are never added, updated, reported as
+conflicts or removed. The file belongs to the repo, so sync never writes it. An entry that
+is not a managed file is reported as a probable typo.
 ```
 
-Add this bullet to the `## 1.1.0` entry of `CHANGELOG.md` (below the `check-harness` bullet): `- `sync-harness.js --adopt <repo>` brings a repo made before `new-product.js` under the sync, and `--base <branch>` (default main, else master) picks the branch the sync worktree is cut from.`
+Add this bullet to the `## 1.1.0` entry of `CHANGELOG.md` (below the `check-harness` bullet): `- `sync-harness.js --adopt <repo>` brings a repo made before `new-product.js` under the sync, and `--base <branch>` (default main, else master) picks the branch the sync worktree is cut from. A repo can opt out of managed files that are not generic for it with `.claude/harness.skip.json`.`
 
 - [ ] **Step 7: Commit**
 
 ```bash
-rtk git add scripts/lib/adopt.js scripts/adopt.test.js scripts/lib/sync.js scripts/sync-harness.js package.json docs/bootstrap.md CHANGELOG.md
+rtk git add scripts/lib/adopt.js scripts/lib/skip.js scripts/adopt.test.js scripts/lib/sync.js scripts/sync-harness.js package.json docs/bootstrap.md CHANGELOG.md
 rtk git commit -m "feat: add sync-harness --adopt and a configurable base branch" -m "Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
 ```
 
@@ -1894,7 +2020,7 @@ rtk git commit -m "feat: add sync-harness --adopt and a configurable base branch
 
 - [ ] **Step 4 (ASK): roll out to `ridgo`.** Run `node scripts/sync-harness.js --all` (dry run). Expected for `ridgo`: `add .claude/workflows/flow.js` and a version change `1.0.0 -> 1.1.0`, no conflicts. Show the user the output and ask before `--apply`; `--apply` writes into `D:\internal_project\ridgo-sync` on branch `chore/harness-sync-v1.1.0` and commits nothing. `ridgo` must have `main` and a clean `.claude/` (its local `settings.local.json` is ignored by git).
 
-- [ ] **Step 4b (ASK): bring `D:\internal_project\string-art` under the sync and roll `/flow` out to it.** `string-art` is a private GitHub repo on branch `master` (remote `origin`, already pushed). Ask the user first, then: (1) `node scripts/sync-harness.js --adopt D:\internal_project\string-art` (expected: 10 identical files recorded, 0 differ, 1 missing = `product-brainstorm.js` is NOT managed for it? check: the manifest manages `.claude/workflows`, so `flow.js` and `product-brainstorm.js` both show as missing and will be ADDED; tell the user `product-brainstorm.js` is the Ridgo-specific workflow and ask whether to keep it out, in which case stop and decide how before applying); (2) with the user's approval, commit the new `.claude/.harness-version` in `string-art` on `master` (`git -C D:\internal_project\string-art add .claude/.harness-version` then `commit -m "chore: adopt harness sync"` with the Sonnet 5.5 trailer; it must not stage `img/`); (3) dry run `node scripts/sync-harness.js D:\internal_project\string-art`, show it; (4) after approval `--apply` (writes `D:\internal_project\string-art-sync` on branch `chore/harness-sync-v1.1.0`, commits nothing); (5) the user reviews, commits, pushes and merges that branch themselves.
+- [ ] **Step 4b (ASK): bring `D:\internal_project\string-art` under the sync and roll `/flow` out to it.** `string-art` is a private GitHub repo on branch `master` (remote `origin`, already pushed). Ask the user first, then: (1) in `string-art` create `.claude/harness.skip.json` with `{ "skip": [".claude/workflows/product-brainstorm.js"] }` (that workflow is Ridgo-specific; the user wants `string-art` to receive only the generic workflows) and commit it on `master` together with step (2), never staging `img/`; then `node scripts/sync-harness.js --adopt D:\internal_project\string-art` (expected: the 10 command/agent/skill files recorded as identical, 0 differ, `product-brainstorm.js` skipped, `flow.js` missing so it will be added); (2) with the user's approval, commit the new `.claude/.harness-version` in `string-art` on `master` (`git -C D:\internal_project\string-art add .claude/.harness-version` then `commit -m "chore: adopt harness sync"` with the Sonnet 5.5 trailer; it must not stage `img/`); (3) dry run `node scripts/sync-harness.js D:\internal_project\string-art`, show it; (4) after approval `--apply` (writes `D:\internal_project\string-art-sync` on branch `chore/harness-sync-v1.1.0`, commits nothing); (5) the user reviews, commits, pushes and merges that branch themselves.
 
 - [ ] **Step 5 (ASK): push.** Ask before pushing `feat/flow-workflow`. `claude-harness` is public; confirm nothing private is in the diff (`git diff origin/main..HEAD --stat`).
 
