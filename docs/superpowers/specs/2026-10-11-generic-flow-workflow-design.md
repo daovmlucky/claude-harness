@@ -10,7 +10,7 @@ Phần đặc thù từng repo do repo tự định nghĩa; phần chung nằm �
 Thành công khi: (1) `/flow` chạy tới cổng kế tiếp rồi dừng, và chỉ tiếp tục sau khi người dùng duyệt; (2) không có đường nào đi qua cổng mà chưa duyệt; (3) fix-loop không bao giờ báo xanh nếu test hoặc review chưa đạt; (4) không bao giờ tự push, mở PR hay merge; (5) nội dung từng bước luôn trùng với file lệnh tương ứng.
 
 ## 2. Ngoài phạm vi (cố ý, chuyển sang sau) **[U]**
-Plugin và bước tự định nghĩa; giao diện chỉnh pipeline; chạy các bước song song; chọn model theo bước; đường ý-tưởng-đến-PR (G0–G3, spec `2026-10-06-idea-to-pr-workflows-design.md`); sửa lệnh hoặc skill cũ.
+Plugin và bước tự định nghĩa; giao diện chỉnh pipeline; chạy các bước song song; đường ý-tưởng-đến-PR (G0–G3, spec `2026-10-06-idea-to-pr-workflows-design.md`); sửa lệnh hoặc skill cũ.
 
 ## 3. Ràng buộc từ runtime (nguồn: https://code.claude.com/docs/en/workflows)
 - Script không nạp được mã ngoài (`import()` làm workflow lỗi) và không tự đọc/ghi file hay chạy shell: **chỉ agent** làm được.
@@ -53,6 +53,17 @@ Dùng file riêng, **không dùng** `docs/gates.json`: mẫu sản phẩm của 
 ### 4.5 `fix-loop` do script điều khiển **[U]**
 Tối đa 5 vòng, mỗi vòng: **Test** (agent tự phát hiện lệnh test, trả `{ passed, command, summary }`) song song với **Review** (agent mới đọc `.claude/agents/reviewer.md` và chấm theo `docs/spec.md`, trả `{ verdict: PASS|BLOCK, blockers[] }`); **Ghi** kết quả vào `docs/run-log.md`; nếu test đạt **và** verdict `PASS` thì xanh; nếu không, một agent **Fix** sửa đúng các lỗi test và `[BLOCKER]`, rồi sang vòng sau. Dừng sớm và chuyển lên người dùng khi cùng một tập blocker lặp lại hai vòng liên tiếp (không tạo ra tiến triển), hoặc khi hết 5 vòng. Không bao giờ báo xanh nếu thiếu một trong hai điều kiện. Agent viết mã và agent review khác nhau, nên review độc lập.
 
+### 4.6a Tiết kiệm chi phí **[U]**
+- **Model theo bước**, khai báo thành một bảng nhỏ ở đầu `flow.js` (dễ chỉnh): mạnh cho `design`, `blueprint` và agent **review**; tầm trung cho `implement` và agent **fix**; rẻ cho agent ghi trạng thái và agent chạy test. Tên model hợp lệ cho tùy chọn `model` của `agent()` phải được kiểm chứng khi viết mã; nếu một giá trị bị từ chối thì lui về model của phiên và ghi cảnh báo, không làm hỏng lần chạy.
+- **Gộp Load vào bước đầu khi chạy tiếp:** pha Load chỉ là agent riêng cho `status` và `approve`; khi `/flow` chạy bình thường, bước đầu tiên tự đọc trạng thái (một agent ít hơn mỗi lần chạy).
+- **Nhãn agent ngắn và ổn định** (`explore`, `fix-loop#2:review`...) để báo cáo ở mục 4.7 gắn đúng token vào đúng bước.
+
+### 4.7 Báo cáo chi phí **[U]**
+Script Node thường `scripts/flow-report.js` (**không tốn token**), chạy ngoài workflow: `node <harness>/scripts/flow-report.js [--project <repo>] [--run wf_<id>]` (mặc định lần chạy `flow` mới nhất của repo). Nó đọc bản ghi runtime lưu cho mỗi lần chạy workflow (`~/.claude/projects/<mã-repo>/<phiên>/subagents/workflows/wf_<id>/`: `agent-*.meta.json` cho nhãn và pha, `agent-*.jsonl` cho `message.usage`) và in bảng theo agent, theo pha và tổng, với bốn cột: `input`, `output`, `cache_read`, `cache_creation`. Có `--append` để ghi thêm một mục vào `docs/flow-cost.md` của repo (file thuộc repo, sync không đụng tới) để theo dõi theo thời gian.
+- **Chỉ báo token, không đổi ra tiền:** giá thay đổi theo model và gói; bảng cho thấy cache đọc và ghi tách riêng vì chúng khác giá.
+- **Cấu trúc thư mục trên là nội bộ của Claude Code, không có trong tài liệu.** Đã quan sát trên Claude Code 2.1.289 (Windows). Script phải **báo lỗi rõ ràng** khi không thấy cấu trúc đó, không in số sai. Test dùng bản ghi mẫu nhỏ làm fixture.
+- Lần chạy thử đầu tiên (mục 5) **bắt buộc** chạy báo cáo này và ghi bảng kết quả vào CHANGELOG làm mốc so sánh.
+
 ### 4.6 Quan hệ với các lệnh cũ
 Nội dung từng bước chỉ nằm ở file lệnh cũ; `flow.js` chỉ chứa **bộ khung** (thứ tự, cổng, vòng lặp, trạng thái). Sửa một file lệnh thì `/flow` tự thấy. Rủi ro: một lệnh cũ bị sửa thành đòi hỏi tương tác mới thì workflow sẽ không biết; chấp nhận, và `check-harness` kiểm tra đủ 8 file lệnh tồn tại như hiện nay.
 
@@ -70,6 +81,9 @@ Thêm mới, tương thích ngược (không đổi file trạng thái hay lện
 - **Review độc lập chỉ là ngữ cảnh mới**, không phải loại subagent riêng; tôi chưa kiểm chứng mức độ tách biệt này so với lệnh `/fix-loop` hiện tại.
 - **Sửa tay trạng thái** có thể làm `/flow` đi sai bước; Load kiểm tra thứ tự nhưng không chứng minh bước đã thật sự xong ngoài việc kiểm tra file đầu ra.
 
+## 7a. Số đo cơ sở đã có
+Một lần chạy `product-brainstorm` (9 agent) trong `ridgo`, đọc từ chính bản ghi nói trên: tổng cộng khoảng 57.500 token `output`, 232 token `input` mới, 4,1 triệu token `cache_read` và 1,06 triệu token `cache_creation`. Mỗi agent, kể cả agent kiểm chứng chỉ đọc kết quả có sẵn, đã tốn **50.000 đến 250.000 token `cache_creation`**, trong khi `output` chỉ 3.000 đến 14.000. Gợi ý (chưa kết luận, mới một lần đo): chi phí **cố định mỗi agent** (phần mở đầu ngữ cảnh) lớn hơn nhiều so với phần agent tự viết ra, nên **giảm số agent** hiệu quả hơn giảm độ dài từng agent.
+
 ## 8. Quyết định
 1. **[U]** Một workflow `/flow`, dừng ở cổng kế tiếp; không chia ba workflow.
 2. **[U]** Cổng là cấu hình; mặc định hai cổng; chỉ thêm, không gỡ.
@@ -79,3 +93,5 @@ Thêm mới, tương thích ngược (không đổi file trạng thái hay lện
 6. **[D]** Trạng thái ở `docs/flow-state.json`, cấu hình ở `docs/flow.config.json`.
 7. **[D]** Lõi mỏng: nội dung bước đọc từ file lệnh cũ.
 8. **[D]** Dừng sớm của fix-loop khi tập blocker lặp lại hai vòng.
+9. **[U]** Chọn model theo bước (bảng ở đầu `flow.js`) thuộc phạm vi bản đầu.
+10. **[U]** Có `scripts/flow-report.js` báo cáo token theo agent, pha, tổng; lần chạy thử đầu tiên ghi số đo vào CHANGELOG.
