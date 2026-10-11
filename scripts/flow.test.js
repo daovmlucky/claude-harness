@@ -317,6 +317,11 @@ const withState = (o, extra = {}) => makeWorld({ files: { 'docs/flow-state.json'
   r = await run(w, undefined);
   check('a BLOCK verdict with no listed blockers is not green', loopLabels(r.labels).filter((l) => l.endsWith(':fix')).length === 1 && /round 2/.test(w.reports[0]));
 
+  w = fromImplement({ tests: [{ passed: false, command: 'npm test', summary: 'build broke', failures: [] }, TEST_PASS_()] });
+  r = await run(w, undefined);
+  const ll = loopLabels(r.labels);
+  check('tests failing with an empty failures list is not green', ll.filter((l) => l.endsWith(':fix')).length === 1 && ll.includes('fix-loop#1:fix') && /round 2/.test(w.reports[0]) && r.labels.includes('deliver') && r.out.outcome === 'gate' && ll.includes('fix-loop#2:test') && ll.includes('fix-loop#2:review'));
+
   // agents that return nothing
   w = fromImplement({ reviews: [null] });
   r = await run(w, undefined);
