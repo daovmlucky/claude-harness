@@ -8,6 +8,13 @@ Every released `harnessVersion` needs an entry below. Classify each change:
   renames a command, needs new settings/env/Claude Code version, changes the
   execution model). Sync refuses major jumps.
 
+## 1.1.1 (patch)
+- `.gitattributes` keeps `.claude/workflows/*.js` at LF. Claude Code's Workflow tool refuses a script with carriage returns (`script contains control characters that would be hidden in the approval dialog`), and git `core.autocrlf=true` writes CRLF on checkout.
+- New repos get the file from the product template (`product-template/gitattributes.tmpl`).
+- `check-harness` now flags a carriage return in a workflow script.
+- Fix an existing repo: add the `.gitattributes` line from the template, then rewrite the workflow file with LF line endings (or run `git add --renormalize .claude/workflows` and re-checkout the file).
+- Sync compares files ignoring line endings, so it does not repair CRLF in a product, and it does not add `.gitattributes` to an older repo.
+
 ## 1.1.0 (minor: additive)
 - New `/flow` workflow: one command that runs the existing 8 steps (explore .. deliver) up to the next human gate and stops. `/flow <task>`, `/flow`, `/flow status`, `/flow approve <step>`. Gates after `requirements` and `deliver` are required; a repo may add more in `docs/flow.config.json` (`extraGates`). State lives in `docs/flow-state.json`.
 - The fix-loop inside `/flow` runs test and independent review (the `reviewer` agent) in parallel, at most 5 rounds, and stops early when two rounds in a row fail the same way. It never reports green unless tests pass and the review is PASS.
