@@ -38,6 +38,25 @@ function staleNotes(root) {
   }
 }
 
+// Static rules for workflow scripts (the runtime throws on these at run time).
+function stripComments(src) {
+  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+}
+
+function workflowProblems(src) {
+  const code = stripComments(src);
+  const problems = [];
+  if (!/^\s*export const meta = \{/.test(code)) problems.push('must start with "export const meta = {" (a literal object)');
+  const banned = [
+    [/\bimport\s*\(/, 'import() is not allowed in a workflow script'],
+    [/\bDate\.now\b/, 'Date.now is disabled in workflow scripts'],
+    [/\bMath\.random\b/, 'Math.random is disabled in workflow scripts'],
+    [/\bnew\s+Date\(\s*\)/, 'new Date() without arguments is disabled in workflow scripts'],
+  ];
+  for (const [re, msg] of banned) if (re.test(code)) problems.push(msg);
+  return problems;
+}
+
 function main() {
   const root = getRoot();
   const problems = [];
@@ -63,6 +82,14 @@ function main() {
   if (!fs.existsSync(skill)) problems.push('missing skill: .claude/skills/harness/SKILL.md');
   else if (!/name:\s*harness/.test(fs.readFileSync(skill, 'utf8'))) {
     problems.push('SKILL.md missing "name: harness"');
+  }
+
+  const wfDir = path.join(root, '.claude', 'workflows');
+  if (!fs.existsSync(path.join(wfDir, 'flow.js'))) problems.push('missing workflow: .claude/workflows/flow.js');
+  if (fs.existsSync(wfDir)) {
+    for (const f of fs.readdirSync(wfDir).filter((x) => x.endsWith('.js'))) {
+      for (const p of workflowProblems(fs.readFileSync(path.join(wfDir, f), 'utf8'))) problems.push(`workflow ${f}: ${p}`);
+    }
   }
 
   const manifestPath = path.join(root, 'harness.manifest.json');
@@ -112,4 +139,4 @@ function main() {
 }
 
 if (require.main === module) main();
-module.exports = { staleNotes };
+module.exports = { staleNotes, workflowProblems };

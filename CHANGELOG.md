@@ -8,6 +8,14 @@ Every released `harnessVersion` needs an entry below. Classify each change:
   renames a command, needs new settings/env/Claude Code version, changes the
   execution model). Sync refuses major jumps.
 
+## 1.1.0 (minor: additive)
+- New `/flow` workflow: one command that runs the existing 8 steps (explore .. deliver) up to the next human gate and stops. `/flow <task>`, `/flow`, `/flow status`, `/flow approve <step>`. Gates after `requirements` and `deliver` are required; a repo may add more in `docs/flow.config.json` (`extraGates`). State lives in `docs/flow-state.json`.
+- The fix-loop inside `/flow` runs test and independent review (the `reviewer` agent) in parallel, at most 5 rounds, and stops early when two rounds in a row fail the same way. It never reports green unless tests pass and the review is PASS.
+- New `scripts/flow-report.js`: prints token usage per agent and phase for a workflow run (no tokens spent).
+- `check-harness` now lints every `.claude/workflows/*.js` and requires `flow.js`.
+- `sync-harness.js --adopt <repo>` brings a repo made before `new-product.js` under the sync, and `--base <branch>` (default main, else master) picks the branch the sync worktree is cut from. A repo can opt out of managed files that are not generic for it with `.claude/harness.skip.json`.
+- The existing commands, skill and `reviewer` agent are unchanged; the manual pipeline still works.
+
 ## 1.0.0
 - Initial product bootstrap: `new-product.js`, `sync-harness.js`, `product-template/`, `/product-brainstorm`.
 - `/product-brainstorm` ships with prompts written for a motorbike-touring app; it is replaced by a generic `/brainstorm` in a later phase.

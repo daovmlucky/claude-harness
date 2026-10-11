@@ -30,7 +30,7 @@ function readManifest(root) {
 
 // Every file the harness distributes: manifest `managed` entries (files or
 // directories) minus `exclude`. Returns sorted posix-style relative paths.
-const NEVER_MANAGED = ['.claude/settings.json', '.claude/settings.local.json', '.claude/.harness-version'];
+const NEVER_MANAGED = ['.claude/settings.json', '.claude/settings.local.json', '.claude/.harness-version', '.claude/harness.skip.json'];
 const JUNK = new Set(['.ds_store', 'thumbs.db']);
 
 function listManaged(root) {

@@ -3,7 +3,7 @@ const { execFileSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { staleNotes } = require('./check-harness');
+const { staleNotes, workflowProblems } = require('./check-harness');
 const { createProduct } = require('./lib/create-product');
 const { makeFakeHarness, write } = require('./lib/testutil');
 
@@ -79,10 +79,10 @@ fs.rmSync(brokenManifest, { recursive: true, force: true });
 // AC7: a version without a CHANGELOG entry, and a malformed version → exit 1
 const noEntry = fullFixture();
 const nm = JSON.parse(fs.readFileSync(path.join(noEntry, 'harness.manifest.json'), 'utf8'));
-nm.harnessVersion = '1.1.0';
+nm.harnessVersion = '9.9.9';
 write(path.join(noEntry, 'harness.manifest.json'), JSON.stringify(nm));
 const ne = run(noEntry);
-check('AC7 version without changelog entry exits 1', ne.code === 1 && /CHANGELOG\.md has no entry for 1\.1\.0/.test(ne.out));
+check('AC7 version without changelog entry exits 1', ne.code === 1 && /CHANGELOG\.md has no entry for 9\.9\.9/.test(ne.out));
 nm.harnessVersion = 'one';
 write(path.join(noEntry, 'harness.manifest.json'), JSON.stringify(nm));
 const bad = run(noEntry);
@@ -113,6 +113,29 @@ fs.rmSync(path.join(staleParent, 'old-one'), { recursive: true, force: true });
 check('AC6 a registered but deleted product is skipped quietly', staleNotes(fakeHarness).length === 0);
 fs.rmSync(fakeHarness, { recursive: true, force: true });
 fs.rmSync(staleParent, { recursive: true, force: true });
+
+// AC8: workflow lint
+check('AC8 a clean workflow has no problems', workflowProblems('export const meta = { name: "x", description: "y" };\nconst a = 1;\n').length === 0);
+check('AC8 forbidden tokens in comments are fine', workflowProblems('// Date.now() and Math.random() are disabled\nexport const meta = { name: "x", description: "y" };\n').length === 0);
+check('AC8 /* block */ comments are ignored', workflowProblems('/* new Date() import( */\nexport const meta = { name: "x", description: "y" };\n').length === 0);
+check('AC8 Date.now is rejected', workflowProblems('export const meta = { name: "x", description: "y" };\nconst t = Date.now();\n').some((p) => /Date\.now/.test(p)));
+check('AC8 Math.random is rejected', workflowProblems('export const meta = { name: "x", description: "y" };\nMath.random();\n').some((p) => /Math\.random/.test(p)));
+check('AC8 argless new Date() is rejected', workflowProblems('export const meta = { name: "x", description: "y" };\nnew Date();\n').some((p) => /new Date/.test(p)));
+check('AC8 argless new  Date() with two spaces is rejected', workflowProblems('export const meta = { name: "x", description: "y" };\nnew  Date();\n').some((p) => /new Date/.test(p)));
+check('AC8 new Date(x) is allowed', workflowProblems('export const meta = { name: "x", description: "y" };\nnew Date(0);\n').length === 0);
+check('AC8 import() is rejected', workflowProblems('export const meta = { name: "x", description: "y" };\nimport("fs");\n').some((p) => /import\(\)/.test(p)));
+check('AC8 a file without meta first is rejected', workflowProblems('const a = 1;\nexport const meta = {};\n').some((p) => /export const meta/.test(p)));
+
+const lintFixture = fullFixture();
+write(path.join(lintFixture, '.claude/workflows/bad.js'), 'export const meta = { name: "bad", description: "d" };\nconst t = Date.now();\n');
+const lint = run(lintFixture);
+check('AC8 check-harness fails on a bad workflow and names it', lint.code === 1 && /workflow bad\.js: .*Date\.now/.test(lint.out));
+fs.rmSync(path.join(lintFixture, '.claude/workflows/bad.js'));
+fs.rmSync(path.join(lintFixture, '.claude/workflows/flow.js'));
+const noFlow = run(lintFixture);
+check('AC8 check-harness requires flow.js', noFlow.code === 1 && /missing workflow: \.claude\/workflows\/flow\.js/.test(noFlow.out));
+fs.rmSync(lintFixture, { recursive: true, force: true });
+check('AC8 the real workflows all pass the lint', ['flow.js', 'product-brainstorm.js', 'study-research.js'].every((f) => workflowProblems(fs.readFileSync(path.join(REPO, '.claude', 'workflows', f), 'utf8')).length === 0));
 
 if (!ok) process.exit(1);
 console.log('PASS (test suite)');
