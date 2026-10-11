@@ -244,6 +244,106 @@ const withState = (o, extra = {}) => makeWorld({ files: { 'docs/flow-state.json'
   r = await run(w, 'build x');
   check('a save agent that returns nothing is reported', r.out.outcome === 'failed' && /could not be saved/.test(r.out.message));
 
+  // === SECTION: fix-loop ===
+  const FAIL_T = (n) => ({ passed: false, command: 'npm test', summary: `t${n} fails`, failures: [`t${n}`] });
+  const BLOCK = (...b) => ({ verdict: 'BLOCK', blockers: b });
+  const fromImplement = (extra = {}) => makeWorld({
+    files: { 'docs/flow-state.json': stateJson({ completed: STEPS_ALL().slice(0, 6), approved: ['requirements'] }) },
+    ...extra,
+  });
+  const loopLabels = (labels) => labels.filter((l) => l.startsWith('fix-loop#'));
+
+  // green on round 1, then deliver
+  w = fromImplement();
+  r = await run(w, undefined);
+  check('green on round 1: test and review run, no fix', same(loopLabels(r.labels).sort(), ['fix-loop#1:review', 'fix-loop#1:test']));
+  check('green fix-loop proceeds to deliver and stops at the release gate', r.labels.includes('deliver') && r.out.outcome === 'gate' && /approve deliver/.test(r.out.message));
+  check('all eight steps are saved as completed', same(w.saves.at(-1).completed, STEPS_ALL()));
+  check('the fix-loop record is saved and says GREEN', w.reports.length === 1 && /round 1: tests PASS/.test(w.reports[0]) && /result: GREEN/.test(w.reports[0]));
+  const reviewCall = r.calls.find((c) => c.opts.label === 'fix-loop#1:review');
+  const testCall = r.calls.find((c) => c.opts.label === 'fix-loop#1:test');
+  check('the review agent is the reviewer agent type', reviewCall.opts.agentType === 'reviewer');
+  check('the test agent is not', testCall.opts.agentType === undefined);
+  check('test and review use the Fix loop phase', reviewCall.opts.phase === 'Fix loop' && testCall.opts.phase === 'Fix loop');
+  check('the test agent is told not to modify files', /Do not modify any file/.test(testCall.prompt));
+  check('the review prompt points at the spec', /docs\/spec\.md/.test(reviewCall.prompt));
+
+  // green on round 3
+  w = fromImplement({ tests: [FAIL_T(1), TEST_PASS_(), TEST_PASS_()], reviews: [BLOCK('blocker-alpha'), BLOCK('b'), REVIEW_PASS_()] });
+  r = await run(w, undefined);
+  check('green on round 3 runs two fix agents', loopLabels(r.labels).filter((l) => l.endsWith(':fix')).length === 2);
+  check('green on round 3 still reaches deliver', r.labels.includes('deliver') && r.out.outcome === 'gate');
+  check('the record lists three rounds', (w.reports[0].match(/- round \d/g) || []).length === 3);
+  const fixCall = r.calls.find((c) => c.opts.label === 'fix-loop#1:fix');
+  check('the fix prompt carries the blocker and the failing test', fixCall.prompt.includes('blocker-alpha') && fixCall.prompt.includes('t1'));
+  check('the fix prompt forbids weakening tests', /do not weaken or delete tests/i.test(fixCall.prompt));
+  check('the fix prompt forbids push', /Never push, never open a pull request and never merge\./.test(fixCall.prompt));
+
+  // cap: five rounds, each different, never green
+  w = fromImplement({
+    tests: [1, 2, 3, 4, 5].map(FAIL_T),
+    reviews: [1, 2, 3, 4, 5].map((n) => BLOCK(`b${n}`)),
+  });
+  r = await run(w, undefined);
+  check('five rounds without green escalate', r.out.outcome === 'escalated' && /after 5 rounds/.test(r.out.message));
+  check('exactly five rounds ran', loopLabels(r.labels).filter((l) => l.endsWith(':test')).length === 5);
+  check('four fix agents ran (none after the last round)', loopLabels(r.labels).filter((l) => l.endsWith(':fix')).length === 4);
+  check('deliver never runs after an escalation', !r.labels.includes('deliver'));
+  check('the state stops before fix-loop so /flow retries it', same(w.saves.at(-1).completed, STEPS_ALL().slice(0, 6)) && /^fix-loop:/.test(w.saves.at(-1).failure));
+  check('the record says NOT GREEN', /result: NOT GREEN/.test(w.reports[0]));
+  check('the escalation message points at the run-log', /docs\/run-log\.md/.test(r.out.message));
+
+  // early stop: identical failures twice
+  w = fromImplement({ tests: [FAIL_T(1), FAIL_T(1)], reviews: [BLOCK('same'), BLOCK('same')] });
+  r = await run(w, undefined);
+  check('identical failures twice stop early', r.out.outcome === 'escalated' && /no progress/.test(r.out.message));
+  check('only two rounds and one fix ran', loopLabels(r.labels).filter((l) => l.endsWith(':test')).length === 2 && loopLabels(r.labels).filter((l) => l.endsWith(':fix')).length === 1);
+  w = fromImplement({ tests: [FAIL_T(1), FAIL_T(1)], reviews: [BLOCK('x', 'y'), BLOCK('y', 'x')] });
+  r = await run(w, undefined);
+  check('the same blockers in a different order still count as no progress', r.out.outcome === 'escalated' && /no progress/.test(r.out.message));
+
+  // never green unless both
+  w = fromImplement({ tests: [TEST_PASS_(), TEST_PASS_()], reviews: [BLOCK('x'), BLOCK('x')] });
+  r = await run(w, undefined);
+  check('tests green but review BLOCK is not green', r.out.outcome === 'escalated' && !r.labels.includes('deliver'));
+  w = fromImplement({ tests: [FAIL_T(1), TEST_PASS_()], reviews: [REVIEW_PASS_(), REVIEW_PASS_()] });
+  r = await run(w, undefined);
+  check('review PASS but tests failing is not green on that round, and a later round can be', r.labels.includes('deliver') && loopLabels(r.labels).filter((l) => l.endsWith(':fix')).length === 1);
+  w = fromImplement({ tests: [TEST_PASS_(), TEST_PASS_()], reviews: [{ verdict: 'PASS', blockers: ['x'] }, REVIEW_PASS_()] });
+  r = await run(w, undefined);
+  check('a PASS verdict with a blocker is not green', loopLabels(r.labels).filter((l) => l.endsWith(':fix')).length === 1 && /round 2/.test(w.reports[0]));
+
+  w = fromImplement({ tests: [TEST_PASS_(), TEST_PASS_()], reviews: [BLOCK(), REVIEW_PASS_()] });
+  r = await run(w, undefined);
+  check('a BLOCK verdict with no listed blockers is not green', loopLabels(r.labels).filter((l) => l.endsWith(':fix')).length === 1 && /round 2/.test(w.reports[0]));
+
+  // agents that return nothing
+  w = fromImplement({ reviews: [null] });
+  r = await run(w, undefined);
+  check('a review agent that returns nothing escalates', r.out.outcome === 'escalated' && /review agent did not return/.test(r.out.message));
+  check('and no fix agent or deliver runs', !r.labels.some((l) => l.endsWith(':fix')) && !r.labels.includes('deliver'));
+  w = fromImplement({ tests: [null] });
+  r = await run(w, undefined);
+  check('a test agent that returns nothing escalates', r.out.outcome === 'escalated' && /test agent did not return/.test(r.out.message));
+  w = fromImplement({ tests: [FAIL_T(1)], reviews: [BLOCK('a')] });
+  const respondFix = w.respond;
+  w.respond = (call) => (call.opts.label === 'fix-loop#1:fix' ? null : respondFix(call));
+  r = await run(w, undefined);
+  check('a fix agent that returns nothing escalates', r.out.outcome === 'escalated' && /fix agent did not return/.test(r.out.message));
+
+  // a full run from the start through every gate
+  w = makeWorld();
+  await run(w, 'ship the thing');
+  await run(w, 'approve requirements');
+  r = await run(w, undefined);
+  check('the whole flow runs design..deliver after the first approval', same(r.labels.filter((l) => !l.startsWith('fix-loop#')), ['state', 'design', 'blueprint', 'breakdown', 'implement', 'deliver', 'save']));
+  r = await run(w, 'approve deliver');
+  check('approving deliver finishes the flow', r.out.outcome === 'approved');
+  r = await run(w, undefined);
+  check('and /flow then reports it complete', r.out.outcome === 'complete');
+  r = await run(w, 'status');
+  check('status of a finished flow says every step is done', /every step is done/.test(r.out.message));
+
   // === SECTION: opts sanity ===
   const ALLOWED_OPTS = new Set(['label', 'phase', 'schema', 'effort', 'model', 'agentType']);
   const EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
@@ -259,3 +359,5 @@ const withState = (o, extra = {}) => makeWorld({ files: { 'docs/flow-state.json'
 })().catch((e) => { console.error(e); process.exit(1); });
 
 function STEPS_ALL() { return require('./lib/flowsim').STEPS.slice(); }
+function TEST_PASS_() { return require('./lib/flowsim').TEST_PASS; }
+function REVIEW_PASS_() { return require('./lib/flowsim').REVIEW_PASS; }

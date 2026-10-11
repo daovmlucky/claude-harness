@@ -62,6 +62,29 @@ const STEP_SCHEMA = {
   },
   required: ['status', 'summary', 'artifacts'],
 };
+const TEST_SCHEMA = {
+  type: 'object',
+  properties: {
+    passed: { type: 'boolean' },
+    command: { type: 'string' },
+    summary: { type: 'string' },
+    failures: { type: 'array', items: { type: 'string' } },
+  },
+  required: ['passed', 'command', 'summary', 'failures'],
+};
+const REVIEW_SCHEMA = {
+  type: 'object',
+  properties: {
+    verdict: { type: 'string', enum: ['PASS', 'BLOCK'] },
+    blockers: { type: 'array', items: { type: 'string' } },
+  },
+  required: ['verdict', 'blockers'],
+};
+const FIX_SCHEMA = {
+  type: 'object',
+  properties: { summary: { type: 'string' }, changed: { type: 'array', items: { type: 'string' } } },
+  required: ['summary', 'changed'],
+};
 
 // ---- pure helpers -----------------------------------------------------------
 
@@ -186,6 +209,70 @@ function stepProblem(step, out) {
   return '';
 }
 
+// ---- fix-loop ---------------------------------------------------------------
+
+const testPrompt = (round) => [
+  `Fix-loop round ${round}: run this project's tests.`,
+  'Find the test command (for example npm test, go test ./..., pytest, ./gradlew test, mvn test) and run it. Do not modify any file.',
+  'Report passed (true only if every test passed), the exact command you ran, a one-sentence summary, and failures (one short string per failing test, empty when everything passed).',
+].join('\n');
+
+const reviewPrompt = (round, task) => [
+  `Fix-loop round ${round}: review the current change in this repository against the acceptance criteria in docs/spec.md. Task: ${task}`,
+  'Follow your reviewer instructions. Report through the structured result: verdict PASS or BLOCK, and blockers = one string per [BLOCKER] finding (an empty list when the verdict is PASS).',
+].join('\n');
+
+const fixPrompt = (round, test, review) => [
+  `Fix-loop round ${round}: make the change pass.`,
+  `Failing tests: ${test.failures.length ? test.failures.join(' | ') : '(none)'}`,
+  `Reviewer blockers: ${review.blockers.length ? review.blockers.join(' | ') : '(none)'}`,
+  'Apply targeted fixes for exactly these problems. Do not change docs/spec.md, and do not weaken or delete tests to make them pass.',
+  NO_PUSH,
+  'Report a one-line summary and the repo-relative paths you changed.',
+].join('\n');
+
+async function fixLoop(task) {
+  const rounds = [];
+  let previous = null;
+  for (let round = 1; round <= MAX_ROUNDS; round++) {
+    const [test, review] = await parallel([
+      () => agent(testPrompt(round), { label: `fix-loop#${round}:test`, phase: 'Fix loop', schema: TEST_SCHEMA, ...TIERS.test }),
+      () => agent(reviewPrompt(round, task), { label: `fix-loop#${round}:review`, phase: 'Fix loop', schema: REVIEW_SCHEMA, agentType: 'reviewer', ...TIERS.review }),
+    ]);
+    if (!test || !review) {
+      const who = !test ? 'test' : 'review';
+      rounds.push({ round, note: `the ${who} agent did not return a result` });
+      return { green: false, rounds, reason: `round ${round}: the ${who} agent did not return a result` };
+    }
+    rounds.push({ round, testPassed: test.passed, command: test.command, verdict: review.verdict, blockers: review.blockers, failures: test.failures });
+    if (test.passed && review.verdict === 'PASS' && review.blockers.length === 0) return { green: true, rounds, reason: '' };
+    if (round === MAX_ROUNDS) return { green: false, rounds, reason: `still not green after ${MAX_ROUNDS} rounds` };
+    const signature = JSON.stringify([test.passed, [...test.failures].sort(), [...review.blockers].sort()]);
+    if (signature === previous) {
+      return { green: false, rounds, reason: `round ${round} repeated the failures and blockers of round ${round - 1}: no progress` };
+    }
+    previous = signature;
+    const fix = await agent(fixPrompt(round, test, review), { label: `fix-loop#${round}:fix`, phase: 'Fix loop', schema: FIX_SCHEMA, ...TIERS.fix });
+    if (!fix) {
+      rounds.push({ round, note: 'the fix agent did not return a result' });
+      return { green: false, rounds, reason: `round ${round}: the fix agent did not return a result` };
+    }
+  }
+  return { green: false, rounds, reason: 'the fix-loop ended without a result' };
+}
+
+function renderFixReport(fl) {
+  const lines = fl.rounds.map((r) => {
+    if (r.note) return `- round ${r.round}: ${r.note}`;
+    const extra = [];
+    if (r.blockers.length) extra.push(`blockers: ${r.blockers.join(' | ')}`);
+    if (r.failures.length) extra.push(`failing: ${r.failures.join(' | ')}`);
+    return `- round ${r.round}: tests ${r.testPassed ? 'PASS' : 'FAIL'} (${r.command}), review ${r.verdict}${extra.length ? `, ${extra.join(', ')}` : ''}`;
+  });
+  lines.push(fl.green ? '- result: GREEN' : `- result: NOT GREEN - ${fl.reason}`);
+  return lines.join('\n');
+}
+
 // ---- commands ---------------------------------------------------------------
 
 async function approve(step, st, gates) {
@@ -213,12 +300,22 @@ async function runSegment(start, gates) {
   let outcome = 'gate';
   for (const step of STEPS.slice(cur.completed.length)) {
     log(`Running step: ${step}`);
-    const out = await agent(stepPrompt(step, cur.task), { label: step, phase: 'Steps', schema: STEP_SCHEMA, ...TIERS.step });
-    const problem = stepProblem(step, out);
-    if (problem) {
-      cur.failure = `${step}: ${problem}`;
-      outcome = 'failed';
-      break;
+    if (step === 'fix-loop') {
+      const fl = await fixLoop(cur.task);
+      reports.push(renderFixReport(fl));
+      if (!fl.green) {
+        cur.failure = `fix-loop: ${fl.reason}`;
+        outcome = 'escalated';
+        break;
+      }
+    } else {
+      const out = await agent(stepPrompt(step, cur.task), { label: step, phase: 'Steps', schema: STEP_SCHEMA, ...TIERS.step });
+      const problem = stepProblem(step, out);
+      if (problem) {
+        cur.failure = `${step}: ${problem}`;
+        outcome = 'failed';
+        break;
+      }
     }
     cur.completed.push(step);
     if (gates.includes(step)) break;
@@ -235,6 +332,9 @@ async function runSegment(start, gates) {
   }
   if (outcome === 'failed') {
     return result('failed', `Stopped: ${cur.failure}. Fix the cause, then run /flow to retry from "${retry}".`, { completed: done, failure: cur.failure });
+  }
+  if (outcome === 'escalated') {
+    return result('escalated', `The fix-loop is not green: ${cur.failure.replace(/^fix-loop: /, '')}. See "## Fix-loop (flow)" in docs/run-log.md. Fix it yourself or change the spec, then run /flow to run the fix-loop again.`, { completed: done, failure: cur.failure });
   }
   const last = done[done.length - 1];
   return result('gate', `Stopped at the "${last}" gate. Review the result, then run: /flow approve ${last}`, { completed: done });
