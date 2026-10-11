@@ -156,6 +156,94 @@ const withState = (o, extra = {}) => makeWorld({ files: { 'docs/flow-state.json'
   r = await run(w, 'build something else');
   check('starting after a finished and approved task is allowed', r.out.outcome !== 'refused');
 
+  // === SECTION: run to the first gate ===
+  w = makeWorld();
+  r = await run(w, 'build a login page');
+  check('start runs explore and requirements, then saves', same(r.labels, ['state', 'explore', 'requirements', 'save']));
+  check('start stops at the requirements gate', r.out.outcome === 'gate' && /approve requirements/.test(r.out.message));
+  check('start saves the task and progress', same(w.saves.at(-1), { flowSchema: 1, task: 'build a login page', completed: ['explore', 'requirements'], approved: [], failure: '' }));
+  check('the run does not go past the gate', !r.labels.includes('design'));
+
+  // every step prompt: reads its command file, ignores the interactive stops, never pushes
+  check('every step prompt names its command file', ['explore', 'requirements'].every((s) => r.calls.find((c) => c.opts.label === s).prompt.includes(`.claude/commands/${s}.md`)));
+  check('every step prompt says not to stop and ask', r.calls.filter((c) => STEPS_ALL().includes(c.opts.label)).every((c) => /do NOT stop to ask the user/.test(c.prompt)));
+  check('every step prompt forbids push, PR and merge', r.calls.filter((c) => STEPS_ALL().includes(c.opts.label)).every((c) => /Never push, never open a pull request and never merge\./.test(c.prompt)));
+  check('every step prompt carries the task', r.calls.filter((c) => STEPS_ALL().includes(c.opts.label)).every((c) => c.prompt.includes('Task: build a login page')));
+  check('step agents run in the Steps phase', r.calls.filter((c) => STEPS_ALL().includes(c.opts.label)).every((c) => c.opts.phase === 'Steps'));
+
+  // Review Focus 2: awkward task text is saved intact
+  const odd = 'fix "quotes", a\nnew line and a backslash \\ ok';
+  w = makeWorld();
+  r = await run(w, odd);
+  check('a task with quotes, newlines and a backslash is saved intact', w.saves.at(-1).task === odd);
+
+  // continue after approval, with an extra gate after design
+  w = makeWorld({ files: { 'docs/flow.config.json': '{"extraGates":["design"]}' } });
+  await run(w, 'build something');
+  r = await run(w, 'approve requirements');
+  r = await run(w, undefined);
+  check('with extraGates the run stops after design', same(r.labels, ['state', 'design', 'save']) && r.out.outcome === 'gate' && /approve design/.test(r.out.message));
+  check('and progress is saved', same(w.saves.at(-1).completed, ['explore', 'requirements', 'design']));
+  r = await run(w, undefined);
+  check('the extra gate blocks until approved', r.out.outcome === 'refused' && /approve design/.test(r.out.message));
+  await run(w, 'approve design');
+  r = await run(w, undefined);
+  check('after approving it the run continues with blueprint', r.labels[1] === 'blueprint');
+
+  // continue to the delivery gate (starting from implement is done after the fix-loop exists; here start at deliver)
+  w = withState({ completed: STEPS_ALL().slice(0, 7), approved: ['requirements'] });
+  r = await run(w, undefined);
+  check('deliver stops at the release gate', same(r.labels, ['state', 'deliver', 'save']) && r.out.outcome === 'gate' && /approve deliver/.test(r.out.message));
+
+  // failures
+  w = makeWorld({ steps: { design: () => ({ status: 'failed', summary: 'boom', artifacts: [] }) } });
+  w.files['docs/flow-state.json'] = stateJson({ completed: ['explore', 'requirements'], approved: ['requirements'] });
+  r = await run(w, undefined);
+  check('a failed step stops the run', r.out.outcome === 'failed' && !r.labels.includes('blueprint'));
+  check('the failure names the step and the reason', /design: the agent reported failure: boom/.test(w.saves.at(-1).failure));
+  check('progress before the failure is kept', same(w.saves.at(-1).completed, ['explore', 'requirements']));
+  check('the message says where to retry', /retry from "design"/.test(r.out.message));
+
+  w = makeWorld({ steps: { design: () => null } });
+  w.files['docs/flow-state.json'] = stateJson({ completed: ['explore', 'requirements'], approved: ['requirements'] });
+  r = await run(w, undefined);
+  check('an agent that returns nothing is a failure', r.out.outcome === 'failed' && /did not return a result/.test(w.saves.at(-1).failure));
+
+  // Review Focus 5: a retry that succeeds clears the failure
+  w = makeWorld();
+  w.files['docs/flow-state.json'] = stateJson({ completed: ['explore', 'requirements'], approved: ['requirements'], failure: 'design: boom' });
+  r = await run(w, undefined);
+  check('a successful retry clears the old failure', w.saves.at(-1).failure === '' && w.saves.at(-1).completed.includes('design'));
+
+  // Review Focus 4: required files
+  w = makeWorld({ steps: { requirements: () => ({ status: 'done', summary: 'ok', artifacts: [] }) } });
+  r = await run(w, 'build x');
+  check('requirements must report docs/spec.md', r.out.outcome === 'failed' && /did not report writing docs\/spec\.md/.test(w.saves.at(-1).failure));
+  check('and is then not recorded as completed', same(w.saves.at(-1).completed, ['explore']));
+  w = makeWorld({ steps: { requirements: () => ({ status: 'done', summary: 'ok', artifacts: ['docs\\spec.md'] }) } });
+  r = await run(w, 'build x');
+  check('a Windows path to docs/spec.md is accepted', r.out.outcome === 'gate');
+  w = makeWorld({ steps: { requirements: () => ({ status: 'done', summary: 'ok', artifacts: ['./docs/spec.md'] }) } });
+  r = await run(w, 'build x');
+  check('a ./ path to docs/spec.md is accepted', r.out.outcome === 'gate');
+  w = makeWorld({ steps: { breakdown: () => ({ status: 'done', summary: 'ok', artifacts: ['docs/other.md'] }) } });
+  w.files['docs/flow-state.json'] = stateJson({ completed: ['explore', 'requirements', 'design', 'blueprint'], approved: ['requirements'] });
+  r = await run(w, undefined);
+  check('breakdown must report docs/plan.md', r.out.outcome === 'failed' && /did not report writing docs\/plan\.md/.test(w.saves.at(-1).failure));
+  check('implement does not run after a breakdown failure', !r.labels.includes('implement'));
+
+  // the save agent finds a missing required file
+  w = makeWorld();
+  w.saveMissing = ['docs/spec.md'];
+  r = await run(w, 'build x');
+  check('a required file missing at save time is a failure', r.out.outcome === 'failed' && /docs\/spec\.md/.test(r.out.message));
+
+  w = makeWorld();
+  const respond = w.respond;
+  w.respond = (call) => (call.opts.label === 'save' ? null : respond(call));
+  r = await run(w, 'build x');
+  check('a save agent that returns nothing is reported', r.out.outcome === 'failed' && /could not be saved/.test(r.out.message));
+
   // === SECTION: opts sanity ===
   const ALLOWED_OPTS = new Set(['label', 'phase', 'schema', 'effort', 'model', 'agentType']);
   const EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);

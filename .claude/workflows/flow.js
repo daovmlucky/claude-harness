@@ -53,6 +53,15 @@ const SAVE_SCHEMA = {
   },
   required: ['savedCompleted', 'failure', 'missing'],
 };
+const STEP_SCHEMA = {
+  type: 'object',
+  properties: {
+    status: { type: 'string', enum: ['done', 'failed'] },
+    summary: { type: 'string' },
+    artifacts: { type: 'array', items: { type: 'string' } },
+  },
+  required: ['status', 'summary', 'artifacts'],
+};
 
 // ---- pure helpers -----------------------------------------------------------
 
@@ -153,6 +162,30 @@ const STATE_PROMPT = [
   'Return the text exactly as stored, without commenting on it.',
 ].join('\n');
 
+const normalizePath = (p) => String(p).replace(/\\/g, '/').replace(/^\.\//, '');
+
+function stepPrompt(step, task) {
+  return [
+    `You are running the "${step}" step of the harness delivery flow.`,
+    `Task: ${task}`,
+    '',
+    `1. Read .claude/commands/${step}.md. It is the instruction for this step. Follow it exactly, and use the task above wherever it refers to $ARGUMENTS.`,
+    '2. A workflow runs the human approval gates itself. So do NOT stop to ask the user anything, do NOT wait for approval, and ignore any line that tells you to stop, to ask the user to approve, or to suggest running another command.',
+    `3. ${NO_PUSH} Commit only if the step file asks you to, and only on a feature branch.`,
+    '4. If docs/run-log.md already has a section for this step, replace it instead of adding a duplicate.',
+    '5. Report through the structured result: status "done" (or "failed", with the reason in summary), a one-line summary, and artifacts = the repo-relative paths of the files you wrote or changed. List a path only if the file exists.',
+  ].join('\n');
+}
+
+function stepProblem(step, out) {
+  if (!out) return 'the agent did not return a result';
+  if (out.status !== 'done') return `the agent reported failure: ${out.summary}`;
+  const reported = (out.artifacts || []).map(normalizePath);
+  const missing = (REQUIRED_ARTIFACTS[step] || []).filter((p) => !reported.includes(p));
+  if (missing.length) return `the agent did not report writing ${missing.join(', ')}`;
+  return '';
+}
+
 // ---- commands ---------------------------------------------------------------
 
 async function approve(step, st, gates) {
@@ -174,9 +207,37 @@ async function approve(step, st, gates) {
   return result('approved', `Approved "${step}". ${hint}`, { approved: next.approved });
 }
 
-// Task 2 replaces this stub with the step runner.
 async function runSegment(start, gates) {
-  return result('failed', 'Running steps is not implemented yet.', { completed: start.completed });
+  const cur = { task: start.task, completed: [...start.completed], approved: [...start.approved], failure: '' };
+  const reports = [];
+  let outcome = 'gate';
+  for (const step of STEPS.slice(cur.completed.length)) {
+    log(`Running step: ${step}`);
+    const out = await agent(stepPrompt(step, cur.task), { label: step, phase: 'Steps', schema: STEP_SCHEMA, ...TIERS.step });
+    const problem = stepProblem(step, out);
+    if (problem) {
+      cur.failure = `${step}: ${problem}`;
+      outcome = 'failed';
+      break;
+    }
+    cur.completed.push(step);
+    if (gates.includes(step)) break;
+  }
+
+  const saved = await agent(savePrompt(cur, reports.join('\n')), { label: 'save', phase: 'Save', schema: SAVE_SCHEMA, ...TIERS.save });
+  if (!saved) {
+    return result('failed', 'The steps ran, but docs/flow-state.json could not be saved (the save agent did not return). Check docs/ before running /flow again.', { completed: cur.completed });
+  }
+  const done = saved.savedCompleted;
+  const retry = STEPS[done.length];
+  if (saved.missing.length) {
+    return result('failed', `Required file(s) missing: ${saved.missing.join(', ')}. ${saved.failure} Run /flow to retry from "${retry}".`, { completed: done, failure: saved.failure });
+  }
+  if (outcome === 'failed') {
+    return result('failed', `Stopped: ${cur.failure}. Fix the cause, then run /flow to retry from "${retry}".`, { completed: done, failure: cur.failure });
+  }
+  const last = done[done.length - 1];
+  return result('gate', `Stopped at the "${last}" gate. Review the result, then run: /flow approve ${last}`, { completed: done });
 }
 
 // ---- main -------------------------------------------------------------------
