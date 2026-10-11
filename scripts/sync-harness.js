@@ -7,6 +7,7 @@
 //   directory (emergency/testing exception, single repo only, never with
 //   --all). Major version jumps are never applied.
 const fs = require('fs');
+const { execFileSync } = require('child_process');
 const path = require('path');
 const {
   planSync, hasChanges, applySync, formatPlan, createSyncWorktree, MajorVersionError,
@@ -58,7 +59,20 @@ function syncOne(harnessRoot, name, dir, { apply, inPlace, base }) {
   }
   const wt = createSyncWorktree(dir, plan.versionTo, base);
   if (wt.reused) console.log(`  reusing existing worktree ${wt.dir}`);
-  const wtPlan = planSync(harnessRoot, wt.dir);
+  let wtPlan;
+  try {
+    wtPlan = planSync(harnessRoot, wt.dir);
+    const same = (a, b) => JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
+    if (!same(wtPlan.skipped, plan.skipped) || !same(wtPlan.skipUnknown, plan.skipUnknown)) {
+      throw new Error(`the skip list on the base branch (${wt.baseName ? `"${wt.baseName}"` : 'the sync worktree'}) differs from the checked-out branch; commit .claude/harness.skip.json on the base branch, then retry`);
+    }
+  } catch (e) {
+    if (!wt.reused) {
+      try { execFileSync('git', ['worktree', 'remove', '--force', wt.dir], { cwd: dir, stdio: 'ignore' }); } catch (e2) { /* best effort */ }
+      try { execFileSync('git', ['branch', '-D', wt.branch], { cwd: dir, stdio: 'ignore' }); } catch (e2) { /* best effort */ }
+    }
+    throw e;
+  }
   console.log(formatPlan(`${name} (worktree)`, wtPlan));
   applySync(harnessRoot, wt.dir, wtPlan);
   console.log(`  applied in ${wt.dir} on branch ${wt.branch}${wt.base ? ` (base ${wt.base}, ${wt.baseName})` : ''}`);
@@ -99,6 +113,7 @@ function main() {
       for (const f of r.missing) console.log(`  missing  ${f}`);
       console.log('  wrote .claude/.harness-version; nothing was committed');
       console.log('  next: commit it on the base branch, then do a dry run:');
+      if (r.skipped.length > 0) console.log('  commit .claude/harness.skip.json on the base branch too');
       console.log(`    git -C "${r.dir}" add .claude/.harness-version && git -C "${r.dir}" commit -m "chore: adopt harness sync"`);
       console.log(`    node scripts/sync-harness.js "${r.dir}"`);
       process.exit(0);

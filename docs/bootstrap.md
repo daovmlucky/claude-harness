@@ -50,3 +50,5 @@ the repo's own `.claude/harness.skip.json`:
 Sync and `--adopt` then ignore those paths: they are never added, updated, reported as
 conflicts or removed. The file belongs to the repo, so sync never writes it. An entry that
 is not a managed file is reported as a probable typo.
+Like the version file, commit it on the base branch (main or master): --apply works from that
+branch, not from the files in your working directory.

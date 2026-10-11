@@ -32,7 +32,7 @@ check('sha256 still tells different content apart', sha256(lf) !== sha256(a));
 {
   const r2 = mkTmp('lib2-');
   write(path.join(r2, 'harness.manifest.json'), JSON.stringify({ harnessVersion: '1.0.0', managed: ['.claude'] }));
-  for (const f of ['commands/a.md', 'settings.json', 'settings.local.json', '.harness-version',
+  for (const f of ['commands/a.md', 'settings.json', 'settings.local.json', '.harness-version', 'harness.skip.json',
     '.DS_Store', 'Thumbs.db', 'commands/.DS_Store', 'commands/Thumbs.db']) write(path.join(r2, '.claude', f), 'x\n');
   check('a manifest entry covering .claude lists only real managed files',
     JSON.stringify(listManaged(r2)) === JSON.stringify(['.claude/commands/a.md']));

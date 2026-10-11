@@ -158,6 +158,45 @@ try {
   const badAdopt = legacyRepo(p, 'badskip-repo', { '.claude/commands/a.md': 'a v1\n', '.claude/harness.skip.json': '{nope' });
   check('a bad skip file is refused by adopt, and nothing is written', /not valid JSON/.test(throws(() => adoptProduct({ harnessRoot: h, productDir: badAdopt, register: false }))) && !fs.existsSync(path.join(badAdopt, '.claude', '.harness-version')));
 
+  // --- the skip list on the checked-out branch must match the base branch ---
+  const mm = legacyRepo(p, 'mm-repo', { '.claude/commands/a.md': 'a v1\n' });
+  const mmSync = path.join(p, 'mm-repo-sync');
+  created.push([mm, mmSync]);
+  cli(['--adopt', mm, '--harness-root', h]);
+  git(mm, ['add', '.claude/.harness-version']);
+  git(mm, ['commit', '-q', '--no-verify', '-m', 'adopt']);
+  git(mm, ['checkout', '-q', '-b', 'task/x']);
+  write(path.join(mm, '.claude', 'harness.skip.json'), '{"skip":[".claude/workflows/w.js"]}');
+  git(mm, ['add', '.claude/harness.skip.json']);
+  git(mm, ['commit', '-q', '--no-verify', '-m', 'skip on task branch only']);
+  write(path.join(h, '.claude/commands/b.md'), 'b v1\n');
+  r = cli([mm, '--harness-root', h]);
+  check('the dry run honours the live skip list', r.code === 0 && /add\s+\.claude\/commands\/b\.md/.test(r.out) && /skipped\s+\.claude\/workflows\/w\.js/.test(r.out));
+  r = cli([mm, '--apply', '--harness-root', h]);
+  check('--apply refuses a skip list that differs from the base branch', r.code === 1 && /skip list on the base branch/.test(r.out));
+  check('and leaves no worktree and no sync branch', !fs.existsSync(mmSync) && git(mm, ['branch', '--list', 'chore/*']) === '');
+  git(mm, ['checkout', '-q', 'master']);
+  git(mm, ['merge', '-q', '--no-verify', 'task/x']);
+  r = cli([mm, '--apply', '--harness-root', h]);
+  check('with the skip file on the base branch, --apply works', r.code === 0 && fs.existsSync(path.join(mmSync, '.claude/commands/b.md')));
+  check('and the worktree does not get the skipped file', !fs.existsSync(path.join(mmSync, '.claude/workflows/w.js')));
+  rm(path.join(h, '.claude/commands/b.md'));
+
+  // --- the worktree is cut from the resolved SHA, not from a name a tag also uses ---
+  const tg = legacyRepo(p, 'tag-repo', { '.claude/commands/a.md': 'a v1\n' }, 'trunk');
+  const tgSync = path.join(p, 'tag-repo-sync');
+  created.push([tg, tgSync]);
+  git(tg, ['tag', 'trunk']);
+  write(path.join(tg, 'extra.txt'), 'extra\n');
+  git(tg, ['add', 'extra.txt']);
+  git(tg, ['commit', '-q', '--no-verify', '-m', 'second']);
+  cli(['--adopt', tg, '--harness-root', h]);
+  git(tg, ['add', '.claude/.harness-version']);
+  git(tg, ['commit', '-q', '--no-verify', '-m', 'adopt']);
+  r = cli([tg, '--apply', '--base', 'trunk', '--harness-root', h]);
+  check('--base works when a tag has the same name', r.code === 0 && fs.existsSync(tgSync));
+  check('the worktree is cut from the branch tip, not the tag', git(tgSync, ['rev-parse', 'HEAD']) === git(tg, ['rev-parse', 'refs/heads/trunk']) && git(tgSync, ['rev-parse', 'HEAD']) !== git(tg, ['rev-parse', 'refs/tags/trunk^{commit}']));
+
   // --- option combinations ---
   for (const [name, args] of [
     ['--adopt with --all', ['--adopt', '--all']],
