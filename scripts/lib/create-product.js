@@ -16,7 +16,8 @@ function copyTemplate(templateRoot, target, name) {
     let rel = toPosix(path.relative(templateRoot, f));
     const rendered = rel.endsWith('.tmpl');
     if (rendered) rel = rel.slice(0, -'.tmpl'.length);
-    if (path.posix.basename(rel) === 'gitignore') rel = path.posix.join(path.posix.dirname(rel), '.gitignore');
+    const base = path.posix.basename(rel);
+    if (base === 'gitignore' || base === 'gitattributes') rel = path.posix.join(path.posix.dirname(rel), '.' + base);
     const out = path.join(target, rel);
     fs.mkdirSync(path.dirname(out), { recursive: true });
     if (rendered) fs.writeFileSync(out, fs.readFileSync(f, 'utf8').split('{{NAME}}').join(name));

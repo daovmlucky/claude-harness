@@ -137,5 +137,17 @@ check('AC8 check-harness requires flow.js', noFlow.code === 1 && /missing workfl
 fs.rmSync(lintFixture, { recursive: true, force: true });
 check('AC8 the real workflows all pass the lint', ['flow.js', 'product-brainstorm.js', 'study-research.js'].every((f) => workflowProblems(fs.readFileSync(path.join(REPO, '.claude', 'workflows', f), 'utf8')).length === 0));
 
+// CRLF: the Workflow tool rejects carriage returns in a workflow script
+const META = 'export const meta = { name: "x", description: "y" };\n';
+check('CRLF a source with CRLF is flagged', workflowProblems((META + 'const a = 1;\n').replace(/\n/g, '\r\n')).some((p) => /carriage-return/.test(p) && /\.gitattributes/.test(p)));
+check('CRLF an LF source is not flagged', !workflowProblems(META + 'const a = 1;\n').some((p) => /carriage-return/.test(p)));
+const crlfFixture = fullFixture();
+const crlfFlow = path.join(crlfFixture, '.claude/workflows/flow.js');
+fs.writeFileSync(crlfFlow, fs.readFileSync(crlfFlow, 'utf8').replace(/\r\n/g, '\n').replace(/\n/g, '\r\n'));
+const crlfRun = run(crlfFixture);
+check('CRLF check-harness fails on a CRLF workflow and names it', crlfRun.code === 1 && /workflow flow\.js: contains carriage-return characters \(CRLF line endings\)/.test(crlfRun.out));
+fs.rmSync(crlfFixture, { recursive: true, force: true });
+check('CRLF the real workflows contain no carriage return', ['flow.js', 'product-brainstorm.js', 'study-research.js'].every((f) => !fs.readFileSync(path.join(REPO, '.claude', 'workflows', f), 'utf8').includes('\r')));
+
 if (!ok) process.exit(1);
 console.log('PASS (test suite)');

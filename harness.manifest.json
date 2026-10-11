@@ -1,5 +1,5 @@
 {
-  "harnessVersion": "1.1.0",
+  "harnessVersion": "1.1.1",
   "managed": [
     ".claude/commands",
     ".claude/agents",

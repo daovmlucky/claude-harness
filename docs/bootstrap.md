@@ -38,7 +38,7 @@ This writes only `.claude/.harness-version` in the repo and registers the repo i
 to the harness (files the repo lists in `.claude/harness.skip.json` are ignored). Files that differ are reported as conflicts by later syncs and are never
 overwritten; files that are missing are added. It commits nothing: commit the new file on
 the base branch yourself, then run a dry run and `--apply` as usual. The sync worktree is
-cut from `main`, else `master`; for any other branch pass `--base <branch>`.
+cut from `main`, else `master`; for any other branch pass `--base <branch>`. Older repos also need the `.gitattributes` line from `product-template/gitattributes.tmpl` (it keeps workflow scripts at LF); sync does not add it.
 
 ### Opting out of a file
 

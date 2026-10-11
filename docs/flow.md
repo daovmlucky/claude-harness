@@ -41,3 +41,12 @@ commands yourself. For small changes use the manual commands. To see what a run 
     node <path-to-claude-harness>/scripts/flow-report.js --project <this repo>
 
 It lists tokens per agent and phase from Claude Code's own run records.
+
+## Troubleshooting
+
+`script contains control characters that would be hidden in the approval dialog` means the workflow file has CRLF line endings (git `core.autocrlf=true` writes them on checkout). Fix it in two steps:
+
+1. Add the `.gitattributes` line from `product-template/gitattributes.tmpl` (`.claude/workflows/*.js text eol=lf`) to the repo.
+2. Rewrite the workflow file with LF line endings:
+
+       node -e "const f='.claude/workflows/flow.js',fs=require('fs');fs.writeFileSync(f,fs.readFileSync(f,'latin1').replace(/\r\n/g,'\n'),'latin1')"

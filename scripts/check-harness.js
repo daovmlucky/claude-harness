@@ -46,6 +46,7 @@ function stripComments(src) {
 function workflowProblems(src) {
   const code = stripComments(src);
   const problems = [];
+  if (src.includes('\r')) problems.push('contains carriage-return characters (CRLF line endings): the Workflow tool rejects them; keep .claude/workflows/*.js at LF (see .gitattributes)');
   if (!/^\s*export const meta = \{/.test(code)) problems.push('must start with "export const meta = {" (a literal object)');
   const banned = [
     [/\bimport\s*\(/, 'import() is not allowed in a workflow script'],

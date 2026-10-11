@@ -67,7 +67,7 @@ check('real manifest has a MAJOR.MINOR.PATCH harnessVersion',
   readManifest(repo).harnessVersion === realManifest.harnessVersion && /^\d+\.\d+\.\d+$/.test(realManifest.harnessVersion));
 check('real CHANGELOG has an entry for the manifest version',
   hasChangelogEntry(fs.readFileSync(path.join(repo, 'CHANGELOG.md'), 'utf8'), realManifest.harnessVersion));
-for (const t of ['CLAUDE.md.tmpl', 'gitignore.tmpl', 'docs/gates.json', 'docs/run-log.md', '.claude/settings.json']) {
+for (const t of ['CLAUDE.md.tmpl', 'gitignore.tmpl', 'gitattributes.tmpl', 'docs/gates.json', 'docs/run-log.md', '.claude/settings.json']) {
   check(`template has ${t}`, fs.existsSync(path.join(repo, 'product-template', t)));
 }
 const gates = JSON.parse(fs.readFileSync(path.join(repo, 'product-template/docs/gates.json'), 'utf8'));
